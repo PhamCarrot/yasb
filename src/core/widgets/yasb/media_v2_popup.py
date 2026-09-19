@@ -237,7 +237,12 @@ class MediaPopup(PopupWidget):
             if config.popup.timestamps == "hidden":
                 self.elapsed.hide()
                 self.duration.hide()
-        self.controls = TransportControls(config.scale * config.popup.controls.scale, details, popup=True)
+        self.controls = TransportControls(
+            config.scale,
+            details,
+            popup=True,
+            icon_size=config.popup.controls.icon_size,
+        )
         for control in (self.controls.previous, self.controls.play, self.controls.next):
             control.set_shape(config.controls_shape, self.s(config.border_radius))
         sections = {

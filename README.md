@@ -14,16 +14,16 @@ Media V2's popup design and motion are inspired by the media widget in [Serpanti
 - Bar artwork, title, timeline, and transport controls.
 - One-click `Via ...` player selection with automatic and manual modes.
 - Configurable popup layout, artwork position, progress display, background, disc visualizer, and equalizer.
-- Independent bar and popup scrolling and control scales.
+- Independent bar and popup scrolling, artwork size, and control icon sizes.
 - YASB-compatible callbacks, keybindings, semantic QSS selectors, and accessibility.
 
-**Media Visualizer Label**
+**Audio Visualizer media label**
 
 - `{title}`, `{artist}`, and conditional `{s}` separator formatting.
 - Static truncation or smooth scrolling.
 - Configurable speed, delay, direction or bounce style, repeat gap, and edge fade.
 - Independent visualizer opacity so the label remains legible.
-- A shared media backend that does not create another Windows session manager.
+- Built directly into `yasb.audio_visualizer.AudioVisualizerWidget`, using the shared media backend instead of a parallel widget or session manager.
 
 ### 3. Guides
 

@@ -8,6 +8,8 @@ type: "yasb.media_v2.MediaWidgetV2"
 
 It provides a compact bar player and a larger media popup with album artwork, playback controls, seeking, player/session selection, an animated disc/visualizer, configurable background effects, an animated artwork-colored border, and an optional 10-band equalizer.
 
+The popup design and motion were inspired by the media widget in [Serpantinum Shell](https://github.com/ilyamiro/serpantinum), then adapted for PyQt, Windows media sessions, and YASB's configuration and styling conventions.
+
 ## Windows GSMTC limitations
 
 Media V2 gets media sessions, metadata, playback state, timeline information, and playback capabilities from Windows Global System Media Transport Controls (GSMTC).
@@ -55,7 +57,7 @@ media_v2:
     controls_shape: "rounded"
 
     scale: 1.0
-    bar_height: 30
+    artwork_size: 28
     border_radius: 8
 
     font_family: "Adwaita Mono"
@@ -67,7 +69,7 @@ media_v2:
       delay: 3000
 
     controls:
-      scale: 1.0
+      icon_size: 18
 
     popup:
       blur: true
@@ -94,7 +96,7 @@ media_v2:
         show_handle: true
 
       controls:
-        scale: 1.0
+        icon_size: 32
 
       artwork_position: "left"
 
@@ -188,7 +190,7 @@ use_default_styles: false
 | `artwork_shape` | string | `"rounded"` | `square`, `rounded`, `circle` | Shape of bar artwork. |
 | `controls_shape` | string | `"rounded"` | `square`, `rounded`, `circle` | Shape used by transport buttons in both the bar and popup. |
 | `scale` | float | `1.0` | `0.75–2.0` | Global Media V2 geometry scale. |
-| `bar_height` | integer | `30` | `28–100` | Bar media surface height before global scaling. |
+| `artwork_size` | integer | `28` | `16–64` | Bar artwork size in logical pixels before global scaling. |
 | `border_radius` | integer | `8` | `0–32` | Base corner radius used by Media V2 geometry/default styling. |
 | `font_family` | string | `"Adwaita Mono"` | Font family | Font used by generated default Media V2 styles. |
 | `use_default_styles` | boolean | `true` | `true`, `false` | Enables Media V2's internally generated QSS. |
@@ -197,6 +199,8 @@ use_default_styles: false
 | `popup` | object | See below | — | Popup configuration. |
 | `callbacks` | object | See below | — | Mouse callbacks for the widget. |
 | `keybindings` | list | `[]` | Keybinding objects | Global keyboard shortcuts targeting this widget. |
+
+Media V2 does not expose a separate bar-height option. The content uses its natural height; control the outer height with vertical QSS padding on `#media-v2-bar` or `.widget-container`.
 
 ---
 
@@ -218,13 +222,9 @@ Controls the size of the bar transport buttons.
 
 | Option | Type | Default | Range | Description |
 |---|---|---:|---|---|
-| `scale` | float | `1.0` | `0.75–1.5` | Additional scale applied to bar previous/play/next controls. |
+| `icon_size` | integer | `18` | `8–64` | Bar previous/play/next icon size in logical pixels. Button hit targets expand when needed. |
 
-The final control scale is approximately:
-
-```text
-widget scale × controls scale
-```
+The full option path is `controls.icon_size`.
 
 ---
 
@@ -245,7 +245,7 @@ widget scale × controls scale
 | `scroll_artist` | boolean | `false` | — | Scroll long artist labels. |
 | `scrolling_label` | object | See below | — | Shared popup title/artist scrolling speed and delay. |
 | `progress` | object | See below | — | Timeline/progress configuration. |
-| `controls` | object | See below | — | Popup control scaling. |
+| `controls` | object | See below | — | Popup control icon sizing. |
 | `artwork_position` | string | `"left"` | `left`, `right`, `top`, `hidden` | Position of the large popup artwork/disc. |
 | `detail_order` | list | Default list | See below | Visible detail sections and their order. Duplicates are not allowed. |
 | `timestamps` | string | `"below"` | `above`, `below`, `inline`, `hidden` | Position of elapsed/duration labels. |
@@ -258,6 +258,8 @@ widget scale × controls scale
 | `border` | object | See below | — | Animated Media V2 content border. |
 
 ## `detail_order`
+
+The full option path is `popup.detail_order`.
 
 Any unique, non-empty combination of:
 
@@ -309,7 +311,9 @@ The entire progress control is disabled when the active GSMTC session is not see
 
 | Option | Type | Default | Range | Description |
 |---|---|---:|---|---|
-| `scale` | float | `1.0` | `0.75–1.5` | Additional size multiplier for popup transport controls. |
+| `icon_size` | integer | `32` | `8–64` | Popup previous/play/next icon size in logical pixels. Button hit targets expand when needed. |
+
+The full option path is `popup.controls.icon_size`.
 
 ---
 
@@ -332,6 +336,8 @@ The visualizer/rhythm/glow effects use YASB's Windows loopback audio capture and
 ---
 
 # `popup.equalizer`
+
+The backend selector's full option path is `popup.equalizer.backend`.
 
 | Option | Type | Default | Values / Range | Description |
 |---|---|---:|---|---|
@@ -471,6 +477,8 @@ config.txt.yasb-backup
 ---
 
 # `popup.background`
+
+The background source's full option path is `popup.background.mode`.
 
 | Option | Type | Default | Values / Range | Description |
 |---|---|---:|---|---|
@@ -874,6 +882,7 @@ use_default_styles: false
 .media-v2-widget #media-v2-bar {
     background: transparent;
     border: none;
+    padding: 4px 0;
 }
 
 .media-v2-widget .media-title {
@@ -889,6 +898,7 @@ use_default_styles: false
 .media-v2-widget .media-art {
     color: #8b9cff;
     background: #282c35;
+    border: none;
 }
 
 .media-v2-widget .btn.media-info {
@@ -898,8 +908,7 @@ use_default_styles: false
 }
 
 .media-v2-widget .btn.media-info:hover {
-    background: rgba(255, 255, 255, 0.07);
-    border-radius: 8px;
+    background: transparent; /* removes the optional bar-info hover fill */
 }
 
 .media-v2-widget .media-controls .btn.transport {
@@ -1095,6 +1104,8 @@ use_default_styles: false
     border: none;
     outline: none;
     padding: 0;
+    margin-left: -6px;
+    margin-right: 6px;
 }
 
 .media-v2-popup .media-progress-track {
@@ -1229,6 +1240,8 @@ use_default_styles: false
 }
 ```
 
+The paired progress margins shift the whole control left while preserving its layout allocation. Positive left padding moves its contents right, so use a small negative left margin for this adjustment.
+
 The examples above assume approximately `scale: 1.0` and `border_radius: 8`. Unlike Media V2's generated default QSS, a normal external stylesheet does not automatically multiply pixel sizes by the widget's `scale` setting.
 
 ---
@@ -1325,7 +1338,7 @@ Some Media V2 elements use custom Qt painting rather than ordinary QSS primitive
 
 ### Album artwork / disc
 
-The album-art component paints its own clipped artwork, fallback note, vinyl details, rotation, reactive movement and outline.
+The album-art component paints its own clipped artwork, fallback note, vinyl details, rotation, reactive movement, and vinyl outline. Normal bar artwork has no playing-state outline.
 
 QSS colors can influence its palette, but QSS cannot directly replace the internal disc animation logic.
 

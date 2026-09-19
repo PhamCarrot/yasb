@@ -101,7 +101,7 @@ class MediaProgressConfig(CustomBaseModel):
 
 
 class MediaControlsConfig(CustomBaseModel):
-    scale: float = Field(default=1.0, ge=0.75, le=1.5, allow_inf_nan=False)
+    icon_size: int = Field(default=18, ge=8, le=64)
 
 
 class MediaV2PopupConfig(CustomBaseModel):
@@ -121,7 +121,7 @@ class MediaV2PopupConfig(CustomBaseModel):
     scroll_artist: bool = False
     scrolling_label: MediaScrollingConfig = Field(default_factory=MediaScrollingConfig)
     progress: MediaProgressConfig = Field(default_factory=MediaProgressConfig)
-    controls: MediaControlsConfig = Field(default_factory=MediaControlsConfig)
+    controls: MediaControlsConfig = Field(default_factory=lambda: MediaControlsConfig(icon_size=32))
     artwork_position: Literal["left", "right", "top", "hidden"] = "left"
     detail_order: list[Literal["title", "artist", "output", "timeline", "controls"]] = Field(
         default_factory=lambda: ["title", "artist", "output", "timeline", "controls"],
@@ -223,7 +223,7 @@ class MediaV2Config(CustomBaseModel):
     artwork_shape: Shape = "rounded"
     controls_shape: Shape = "rounded"
     scale: float = Field(default=1.0, ge=0.75, le=2.0, allow_inf_nan=False)
-    bar_height: int = Field(default=30, ge=28, le=100)
+    artwork_size: int = Field(default=28, ge=16, le=64)
     border_radius: int = Field(default=8, ge=0, le=32)
     font_family: str = "Adwaita Mono"
     use_default_styles: bool = True

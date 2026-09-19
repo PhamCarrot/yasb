@@ -6,7 +6,7 @@ from collections import OrderedDict
 
 from PyQt6.QtCore import QBuffer, QByteArray, QEasingCurve, QIODevice, QSize, Qt, QTimer, pyqtProperty, pyqtSlot
 from PyQt6.QtGui import QImage, QImageReader, QPixmap
-from PyQt6.QtWidgets import QFrame, QGraphicsOpacityEffect, QHBoxLayout, QVBoxLayout
+from PyQt6.QtWidgets import QWIDGETSIZE_MAX, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QVBoxLayout
 
 from core.utils.qobject import is_valid_qobject
 from core.utils.tooltip import set_tooltip
@@ -112,9 +112,10 @@ class MediaWidgetV2(BaseWidget):
         self._info_row.addWidget(self.text_column)
         self._row.addWidget(self.info)
         self.controls = TransportControls(
-            config.scale * config.controls.scale,
+            config.scale,
             self.bar_surface,
             compact=config.compact,
+            icon_size=config.controls.icon_size,
         )
         self._row.addWidget(self.controls)
         self._wire_controls(self.controls)
@@ -396,28 +397,36 @@ class MediaWidgetV2(BaseWidget):
         side = self.s(8 - 2 * c)
         gap = self.s(8 - 2 * c)
         info_gap = self.s(10 - 2 * c)
-        art = self.s(28 - 2 * c)
+        art = self.s(max(8, self.config.artwork_size - 2 * c))
         column = self.s(120 - 4 * c)
         if self.config.layout == "minimal":
             column = info_gap = 0
-        height = self.s(self.config.bar_height)
-        control_scale = self.config.scale * self.config.controls.scale
-        self.controls.set_metrics(scale=control_scale, compact=c, maximum_size=height)
-        button = self.controls.play.width()
-        spacing = self.controls.layout().spacing()
+        self.controls.set_metrics(scale=self.config.scale, compact=c)
         self._row.setContentsMargins(side, 0, side, 0)
         self._row.setSpacing(gap)
         self._info_row.setSpacing(info_gap)
         self.art.setFixedSize(art, art)
         self.art.radius = self.s(10 - c)
         self.text_column.setFixedWidth(column)
-        self.info.setFixedSize(art + info_gap + column, height)
+        self.info.setFixedWidth(art + info_gap + column)
+        self.info.setMinimumHeight(max(art, self.controls.height()))
+        self.info.setMaximumHeight(QWIDGETSIZE_MAX)
         for control in (self.controls.previous, self.controls.play, self.controls.next):
             control.set_shape(self.config.controls_shape, self.s(10 - c))
-        width = 2 * side + art + info_gap + column + gap + 3 * button + 2 * spacing
-        self.bar_surface.setFixedSize(width, height)
-        self._widget_container.setFixedSize(width, height)
-        self.setFixedHeight(height)
+        self.bar_surface.setMinimumWidth(0)
+        self.bar_surface.setMaximumWidth(QWIDGETSIZE_MAX)
+        self.bar_surface.setMinimumHeight(0)
+        self.bar_surface.setMaximumHeight(QWIDGETSIZE_MAX)
+        self.bar_surface.ensurePolished()
+        self._row.invalidate()
+        self._row.activate()
+        width = self.bar_surface.sizeHint().width()
+        self.bar_surface.setFixedWidth(width)
+        self._widget_container.setFixedWidth(width)
+        self._widget_container.setMinimumHeight(0)
+        self._widget_container.setMaximumHeight(QWIDGETSIZE_MAX)
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(QWIDGETSIZE_MAX)
         self.setFixedWidth(round(width * self._visibility))
         # The stylesheet owns rounded geometry; integer masks create jagged edges.
         self.bar_surface.clearMask()

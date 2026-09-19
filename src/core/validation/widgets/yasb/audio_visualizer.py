@@ -21,6 +21,16 @@ class DotsStyleConfig(CustomBaseModel):
     gap: int = Field(default=4, ge=0, le=32)
 
 
+class AudioVisualizerScrollingLabelConfig(CustomBaseModel):
+    enabled: bool = False
+    speed: int = Field(default=30, ge=1, le=250)
+    delay: int = Field(default=1500, ge=0, le=60000)
+    style: Literal["left", "right", "bounce", "bounce-ease"] = "left"
+    separator: str = "   "
+    edge_fade: bool = True
+    fade_width: int = Field(default=12, ge=1, le=200)
+
+
 class AudioVisualizerConfig(CustomBaseModel):
     class_name: str = ""
     style: Literal["bars", "waves", "dots"] = "bars"
@@ -41,6 +51,12 @@ class AudioVisualizerConfig(CustomBaseModel):
     bars: BarsStyleConfig = Field(default_factory=BarsStyleConfig)
     waves: WavesStyleConfig = Field(default_factory=WavesStyleConfig)
     dots: DotsStyleConfig = Field(default_factory=DotsStyleConfig)
+    show_label: bool = False
+    label: str = "{title}"
+    separator: str = " - "
+    max_label_length: int = Field(default=30, ge=0, le=200)
+    scrolling_label: AudioVisualizerScrollingLabelConfig = Field(default_factory=AudioVisualizerScrollingLabelConfig)
+    visualizer_opacity: float = Field(default=1.0, ge=0.0, le=1.0)
     keybindings: list[KeybindingConfig] = []
     callbacks: CallbacksConfig = CallbacksConfig()
 

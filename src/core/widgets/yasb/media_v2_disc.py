@@ -3,7 +3,7 @@
 import math
 import time
 
-from PyQt6.QtCore import QPointF, Qt, QTimer
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPen, QRadialGradient
 
 from core.widgets.services.audio_visualizer.spectrum import FFT_SIZE, SpectrumAnalyzer
@@ -160,6 +160,9 @@ class DiscArt(AlbumArt):
     def _logical_scale(self):
         return max(0.01, min(self.contentsRect().width(), self.contentsRect().height()) / 224.0)
 
+    def _effect_center(self):
+        return QRectF(self.contentsRect()).center() + QPointF(0, self._rhythm_offset_y)
+
     def _effect_limits(self):
         content = self.contentsRect()
         available = max(0.0, (min(content.width(), content.height()) - 1) / 2)
@@ -235,8 +238,7 @@ class DiscArt(AlbumArt):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        content = self.contentsRect()
-        center = QPointF(content.center()) + QPointF(0, self._rhythm_offset_y)
+        center = self._effect_center()
         painter.translate(center)
         painter.rotate(self._rhythm_tilt)
         painter.translate(-center)

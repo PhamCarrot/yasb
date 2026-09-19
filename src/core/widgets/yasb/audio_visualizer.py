@@ -1,11 +1,14 @@
-"""Native YASB audio visualizer, event-driven WASAPI loopback capture."""
+"""Native YASB audio visualizer with optional selected-media labeling."""
 
+import logging
 import time
+from typing import Any
 
-from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
-from PyQt6.QtGui import QHideEvent, QShowEvent
-from PyQt6.QtWidgets import QWIDGETSIZE_MAX
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, pyqtSlot
+from PyQt6.QtGui import QBrush, QColor, QHideEvent, QLinearGradient, QResizeEvent, QShowEvent
+from PyQt6.QtWidgets import QWIDGETSIZE_MAX, QGraphicsOpacityEffect, QGridLayout, QLabel
 
+from core.utils.utilities import ScrollingLabel
 from core.validation.widgets.yasb.audio_visualizer import AudioVisualizerConfig
 from core.widgets.base import BaseWidget
 from core.widgets.services.audio_visualizer.loopback import AudioVisualizerCaptureService
@@ -16,6 +19,142 @@ from core.widgets.services.audio_visualizer.spectrum import (
     layout_mono,
     layout_stereo,
 )
+from core.widgets.services.media.backend import MediaBackend
+from core.widgets.services.media.model import MediaSessionState
+from core.widgets.services.media.tokenizer import clean_string
+
+logger = logging.getLogger("AudioVisualizerWidget")
+_ELLIPSIS = "..."
+_FADE_MAX_RATIO = 0.45
+
+
+def format_media_label(
+    session: MediaSessionState,
+    template: str,
+    separator: str,
+    *,
+    max_length: int,
+    scrolling: bool,
+) -> str:
+    """Format one selected-session label without leaving orphan separators."""
+    title = (session.title or "").strip()
+    artist = (session.artist or "").strip()
+    if not title and not artist:
+        return ""
+    values = {"title": title, "artist": artist, "s": separator}
+    try:
+        text = clean_string(template, values).format_map(values).strip()
+    except KeyError, ValueError, IndexError:
+        logger.warning("Invalid media label format %r, falling back to the title", template)
+        text = title
+    if scrolling or max_length <= 0 or len(text) <= max_length:
+        return text
+    if max_length <= len(_ELLIPSIS):
+        return text[:max_length]
+    return text[: max_length - len(_ELLIPSIS)].rstrip() + _ELLIPSIS
+
+
+class _MarqueeLabel(ScrollingLabel):
+    """ScrollingLabel with a pause before each pass and a clipped edge fade."""
+
+    def __init__(
+        self,
+        *,
+        max_chars: int | None,
+        options: dict[str, Any],
+        delay_ms: int,
+        fade_width: int,
+    ) -> None:
+        self._holding = False
+        self._hold_timer: QTimer | None = None
+        self._fade_effect: QGraphicsOpacityEffect | None = None
+        self._delay_ms = max(0, delay_ms)
+        self._fade_width = max(0, fade_width)
+        super().__init__(None, "", max_chars, options)
+
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._hold_timer.timeout.connect(self._release_hold)
+
+        if self._fade_width > 0:
+            self._fade_effect = QGraphicsOpacityEffect(self)
+            self._fade_effect.setOpacity(1.0)
+            self.setGraphicsEffect(self._fade_effect)
+            self._refresh_fade()
+
+    def _begin_hold(self) -> None:
+        if self._delay_ms <= 0 or self._hold_timer is None:
+            return
+        self._holding = True
+        if self._scroll_timer.isActive():
+            self._scroll_timer.stop()
+        self._hold_timer.start(self._delay_ms)
+
+    def _release_hold(self) -> None:
+        self._holding = False
+        self._sync_scroll_timer()
+
+    def _sync_scroll_timer(self) -> None:
+        if self._holding:
+            if hasattr(self, "_scroll_timer") and self._scroll_timer.isActive():
+                self._scroll_timer.stop()
+            return
+        super()._sync_scroll_timer()
+
+    @pyqtSlot()
+    def _scroll_text(self) -> None:
+        super()._scroll_text()
+        if self._scrolling_needed and not self._holding and self._offset == 0 and self.isVisible():
+            self._begin_hold()
+
+    def _restart(self) -> None:
+        if self._hold_timer is not None:
+            self._hold_timer.stop()
+        self._holding = False
+        if self._scrolling_needed:
+            self._offset = 0
+            self._begin_hold()
+        self._refresh_fade()
+        self.update()
+
+    def setText(self, a0: str | None) -> None:
+        if a0 == self.text():
+            return
+        super().setText(a0)
+        self._restart()
+
+    def hideEvent(self, event) -> None:
+        if self._hold_timer is not None:
+            self._hold_timer.stop()
+        self._holding = False
+        super().hideEvent(event)
+
+    def showEvent(self, event: QShowEvent | None) -> None:
+        super().showEvent(event)
+        self._restart()
+
+    def resizeEvent(self, event: QResizeEvent | None) -> None:
+        super().resizeEvent(event)
+        self._refresh_fade()
+
+    def _refresh_fade(self) -> None:
+        if self._fade_effect is None:
+            return
+        transparent = QColor(0, 0, 0, 0)
+        opaque = QColor(0, 0, 0, 255)
+        gradient = QLinearGradient(0.0, 0.0, 1.0, 0.0)
+        gradient.setCoordinateMode(QLinearGradient.CoordinateMode.ObjectBoundingMode)
+        if self._scrolling_needed:
+            ratio = min(_FADE_MAX_RATIO, self._fade_width / max(1.0, float(self.width())))
+            gradient.setColorAt(0.0, transparent)
+            gradient.setColorAt(ratio, opaque)
+            gradient.setColorAt(1.0 - ratio, opaque)
+            gradient.setColorAt(1.0, transparent)
+        else:
+            gradient.setColorAt(0.0, opaque)
+            gradient.setColorAt(1.0, opaque)
+        self._fade_effect.setOpacityMask(QBrush(gradient))
 
 
 def _sensitivity_mult(value: int) -> float:
@@ -133,7 +272,21 @@ class AudioVisualizerWidget(BaseWidget):
         )
         self._widget_container_layout.setContentsMargins(0, 0, 0, 0)
         self._widget_container_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter)
-        self._widget_container_layout.addWidget(self._canvas)
+        self._label: QLabel | None = None
+        self._media: MediaBackend | None = None
+        self._media_key = None
+        self._label_text = ""
+
+        if config.visualizer_opacity < 1.0:
+            effect = QGraphicsOpacityEffect(self._canvas)
+            effect.setOpacity(config.visualizer_opacity)
+            self._canvas.setGraphicsEffect(effect)
+
+        if config.show_label:
+            self._init_media_label()
+            QTimer.singleShot(0, self._connect_media)
+        else:
+            self._widget_container_layout.addWidget(self._canvas)
 
         self._collapse_animation = QPropertyAnimation(self, b"maximumWidth", self)
         self._collapse_animation.setDuration(150)
@@ -176,6 +329,68 @@ class AudioVisualizerWidget(BaseWidget):
             self._idle_hidden = True
             self._apply_collapsed(True, animate=False)
             self._token.attach()
+
+    def _init_media_label(self) -> None:
+        stack = QGridLayout()
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(0)
+        stack.addWidget(self._canvas, 0, 0, Qt.AlignmentFlag.AlignCenter)
+
+        scroll = self.config.scrolling_label
+        if scroll.enabled:
+            self._label = _MarqueeLabel(
+                max_chars=self.config.max_label_length or None,
+                options={
+                    "update_interval_ms": round(1000 / scroll.speed),
+                    "style": scroll.style,
+                    "separator": scroll.separator,
+                    "always_scroll": False,
+                    "label_padding": 0,
+                },
+                delay_ms=scroll.delay,
+                fade_width=scroll.fade_width if scroll.edge_fade else 0,
+            )
+        else:
+            self._label = QLabel()
+        self._label.setProperty("class", "media-label")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._label.hide()
+        if scroll.enabled:
+            stack.addWidget(self._label, 0, 0, Qt.AlignmentFlag.AlignCenter)
+        else:
+            stack.addWidget(self._label, 0, 0)
+        self._widget_container_layout.addLayout(stack)
+
+    @pyqtSlot()
+    def _connect_media(self) -> None:
+        self._media = MediaBackend.shared()
+        self._media.state_changed.connect(self._refresh_label)
+        self._refresh_label()
+
+    def _refresh_label(self, _state=None) -> None:
+        if self._label is None or self._media is None:
+            return
+        session = self._media.state.active
+        key = (session.session_id, session.title, session.artist) if session else None
+        if key == self._media_key:
+            return
+        self._media_key = key
+        text = self._format_label(session) if session is not None else ""
+        if text == self._label_text:
+            return
+        self._label_text = text
+        self._label.setText(text)
+        self._label.setVisible(bool(text))
+
+    def _format_label(self, session: MediaSessionState) -> str:
+        return format_media_label(
+            session,
+            self.config.label,
+            self.config.separator,
+            max_length=self.config.max_label_length,
+            scrolling=self.config.scrolling_label.enabled,
+        )
 
     def _apply_collapsed(self, collapsed: bool, *, animate: bool = True) -> None:
         """Collapse to zero width rather than ``hide()``, eased so the bar

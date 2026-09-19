@@ -778,6 +778,38 @@
         "dots": {
           "$ref": "#/$defs/DotsStyleConfig"
         },
+        "show_label": {
+          "default": false,
+          "title": "Show Label",
+          "type": "boolean"
+        },
+        "label": {
+          "default": "{title}",
+          "title": "Label",
+          "type": "string"
+        },
+        "separator": {
+          "default": " - ",
+          "title": "Separator",
+          "type": "string"
+        },
+        "max_label_length": {
+          "default": 30,
+          "maximum": 200,
+          "minimum": 0,
+          "title": "Max Label Length",
+          "type": "integer"
+        },
+        "scrolling_label": {
+          "$ref": "#/$defs/AudioVisualizerScrollingLabelConfig"
+        },
+        "visualizer_opacity": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Visualizer Opacity",
+          "type": "number"
+        },
         "keybindings": {
           "default": [],
           "items": {
@@ -814,6 +846,60 @@
         "options"
       ],
       "title": "AudioVisualizerEntry",
+      "type": "object"
+    },
+    "AudioVisualizerScrollingLabelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "speed": {
+          "default": 30,
+          "maximum": 250,
+          "minimum": 1,
+          "title": "Speed",
+          "type": "integer"
+        },
+        "delay": {
+          "default": 1500,
+          "maximum": 60000,
+          "minimum": 0,
+          "title": "Delay",
+          "type": "integer"
+        },
+        "style": {
+          "default": "left",
+          "enum": [
+            "left",
+            "right",
+            "bounce",
+            "bounce-ease"
+          ],
+          "title": "Style",
+          "type": "string"
+        },
+        "separator": {
+          "default": "   ",
+          "title": "Separator",
+          "type": "string"
+        },
+        "edge_fade": {
+          "default": true,
+          "title": "Edge Fade",
+          "type": "boolean"
+        },
+        "fade_width": {
+          "default": 12,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Fade Width",
+          "type": "integer"
+        }
+      },
+      "title": "AudioVisualizerScrollingLabelConfig",
       "type": "object"
     },
     "BarAlignment": {
@@ -8332,12 +8418,12 @@
     "MediaControlsConfig": {
       "additionalProperties": false,
       "properties": {
-        "scale": {
-          "default": 1.0,
-          "maximum": 1.5,
-          "minimum": 0.75,
-          "title": "Scale",
-          "type": "number"
+        "icon_size": {
+          "default": 18,
+          "maximum": 64,
+          "minimum": 8,
+          "title": "Icon Size",
+          "type": "integer"
         }
       },
       "title": "MediaControlsConfig",
@@ -9122,11 +9208,11 @@
           "title": "Scale",
           "type": "number"
         },
-        "bar_height": {
-          "default": 30,
-          "maximum": 100,
-          "minimum": 28,
-          "title": "Bar Height",
+        "artwork_size": {
+          "default": 28,
+          "maximum": 64,
+          "minimum": 16,
+          "title": "Artwork Size",
           "type": "integer"
         },
         "border_radius": {
@@ -9342,271 +9428,6 @@
         }
       },
       "title": "MediaV2PopupConfig",
-      "type": "object"
-    },
-    "MediaVisualizerConfig": {
-      "additionalProperties": false,
-      "description": "Audio Visualizer options plus a foreground media label.\n\nEvery visualizer option (style, height, smoothness, sensitivity,\nauto_gain, framerate, bars/waves/dots, ...) is inherited unchanged, so an\nexisting ``audio_visualizer`` block can be reused unchanged.",
-      "properties": {
-        "class_name": {
-          "default": "",
-          "title": "Class Name",
-          "type": "string"
-        },
-        "style": {
-          "default": "bars",
-          "enum": [
-            "bars",
-            "waves",
-            "dots"
-          ],
-          "title": "Style",
-          "type": "string"
-        },
-        "height": {
-          "default": 14,
-          "maximum": 64,
-          "minimum": 4,
-          "title": "Height",
-          "type": "integer"
-        },
-        "smoothness": {
-          "default": 55,
-          "maximum": 100,
-          "minimum": 0,
-          "title": "Smoothness",
-          "type": "integer"
-        },
-        "sensitivity": {
-          "default": 50,
-          "maximum": 100,
-          "minimum": 0,
-          "title": "Sensitivity",
-          "type": "integer"
-        },
-        "auto_gain": {
-          "default": true,
-          "title": "Auto Gain",
-          "type": "boolean"
-        },
-        "framerate": {
-          "default": 60,
-          "maximum": 120,
-          "minimum": 1,
-          "title": "Framerate",
-          "type": "integer"
-        },
-        "freq_min": {
-          "default": 50,
-          "maximum": 24000,
-          "minimum": 20,
-          "title": "Freq Min",
-          "type": "integer"
-        },
-        "freq_max": {
-          "default": 12000,
-          "maximum": 24000,
-          "minimum": 20,
-          "title": "Freq Max",
-          "type": "integer"
-        },
-        "hide_idle": {
-          "default": false,
-          "title": "Hide Idle",
-          "type": "boolean"
-        },
-        "hide_idle_after": {
-          "default": 2000,
-          "maximum": 60000,
-          "minimum": 100,
-          "title": "Hide Idle After",
-          "type": "integer"
-        },
-        "channels": {
-          "default": "mono",
-          "enum": [
-            "stereo",
-            "mono"
-          ],
-          "title": "Channels",
-          "type": "string"
-        },
-        "mono_option": {
-          "default": "average",
-          "enum": [
-            "average",
-            "left",
-            "right"
-          ],
-          "title": "Mono Option",
-          "type": "string"
-        },
-        "reverse": {
-          "default": false,
-          "title": "Reverse",
-          "type": "boolean"
-        },
-        "mirror": {
-          "default": false,
-          "title": "Mirror",
-          "type": "boolean"
-        },
-        "edge_fade": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "items": {
-                "type": "integer"
-              },
-              "type": "array"
-            }
-          ],
-          "default": 0,
-          "title": "Edge Fade"
-        },
-        "bars": {
-          "$ref": "#/$defs/BarsStyleConfig"
-        },
-        "waves": {
-          "$ref": "#/$defs/WavesStyleConfig"
-        },
-        "dots": {
-          "$ref": "#/$defs/DotsStyleConfig"
-        },
-        "keybindings": {
-          "default": [],
-          "items": {
-            "$ref": "#/$defs/KeybindingConfig"
-          },
-          "title": "Keybindings",
-          "type": "array"
-        },
-        "callbacks": {
-          "$ref": "#/$defs/CallbacksConfig",
-          "default": {
-            "on_left": "do_nothing",
-            "on_middle": "do_nothing",
-            "on_right": "do_nothing"
-          }
-        },
-        "show_label": {
-          "default": true,
-          "title": "Show Label",
-          "type": "boolean"
-        },
-        "label": {
-          "default": "{title}",
-          "title": "Label",
-          "type": "string"
-        },
-        "separator": {
-          "default": " - ",
-          "title": "Separator",
-          "type": "string"
-        },
-        "max_label_length": {
-          "default": 30,
-          "maximum": 200,
-          "minimum": 0,
-          "title": "Max Label Length",
-          "type": "integer"
-        },
-        "scrolling_label": {
-          "$ref": "#/$defs/MediaVisualizerScrollingLabelConfig",
-          "default": {
-            "enabled": false,
-            "speed": 30,
-            "delay": 1500,
-            "style": "left",
-            "separator": "   ",
-            "edge_fade": true,
-            "fade_width": 12
-          }
-        },
-        "visualizer_opacity": {
-          "default": 1.0,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Visualizer Opacity",
-          "type": "number"
-        }
-      },
-      "title": "MediaVisualizerConfig",
-      "type": "object"
-    },
-    "MediaVisualizerEntry": {
-      "properties": {
-        "type": {
-          "const": "yasb.media_visualizer.MediaVisualizerWidget",
-          "title": "Type",
-          "type": "string"
-        },
-        "options": {
-          "$ref": "#/$defs/MediaVisualizerConfig"
-        }
-      },
-      "required": [
-        "type",
-        "options"
-      ],
-      "title": "MediaVisualizerEntry",
-      "type": "object"
-    },
-    "MediaVisualizerScrollingLabelConfig": {
-      "additionalProperties": false,
-      "description": "Marquee behaviour for titles wider than the label area.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "speed": {
-          "default": 30,
-          "maximum": 250,
-          "minimum": 1,
-          "title": "Speed",
-          "type": "integer"
-        },
-        "delay": {
-          "default": 1500,
-          "maximum": 60000,
-          "minimum": 0,
-          "title": "Delay",
-          "type": "integer"
-        },
-        "style": {
-          "default": "left",
-          "enum": [
-            "left",
-            "right",
-            "bounce",
-            "bounce-ease"
-          ],
-          "title": "Style",
-          "type": "string"
-        },
-        "separator": {
-          "default": "   ",
-          "title": "Separator",
-          "type": "string"
-        },
-        "edge_fade": {
-          "default": true,
-          "title": "Edge Fade",
-          "type": "boolean"
-        },
-        "fade_width": {
-          "default": 12,
-          "maximum": 200,
-          "minimum": 1,
-          "title": "Fade Width",
-          "type": "integer"
-        }
-      },
-      "title": "MediaVisualizerScrollingLabelConfig",
       "type": "object"
     },
     "MediaWidgetConfig": {
@@ -17127,9 +16948,6 @@
           },
           {
             "$ref": "#/$defs/MediaV2Entry"
-          },
-          {
-            "$ref": "#/$defs/MediaVisualizerEntry"
           },
           {
             "$ref": "#/$defs/MemoryEntry"
