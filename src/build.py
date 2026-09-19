@@ -49,8 +49,6 @@ build_options = {
         ("../schema.json", "schema.json"),
         ("../MEDIA_V2_GUIDE.md", "MEDIA_V2_GUIDE.md"),
         ("../MEDIA_VISUALIZER_LABEL_GUIDE.md", "MEDIA_VISUALIZER_LABEL_GUIDE.md"),
-        ("../config-media-v2-test.yaml", "config-media-v2-test.yaml"),
-        ("../styles-media-v2-test.css", "styles-media-v2-test.css"),
         (icon_png, "assets/images/app_icon.png"),
         ("assets/images/app_transparent.png", "assets/images/app_transparent.png"),
         ("assets/images/media.png", "assets/images/media.png"),
