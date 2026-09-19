@@ -69,7 +69,7 @@ media_v2:
       delay: 3000
 
     controls:
-      icon_size: 18
+      size: 30
 
     popup:
       blur: true
@@ -96,7 +96,7 @@ media_v2:
         show_handle: true
 
       controls:
-        icon_size: 32
+        size: 43
 
       artwork_position: "left"
 
@@ -222,9 +222,9 @@ Controls the size of the bar transport buttons.
 
 | Option | Type | Default | Range | Description |
 |---|---|---:|---|---|
-| `icon_size` | integer | `18` | `8–64` | Bar previous/play/next icon size in logical pixels. Button hit targets expand when needed. |
+| `size` | integer | `30` | `20–96` | Bar control size in logical pixels. The button container and its icon scale together. |
 
-The full option path is `controls.icon_size`.
+The full option path is `controls.size`. This intentionally keeps the icon proportional to its container instead of exposing a separate icon-size setting.
 
 ---
 
@@ -311,9 +311,9 @@ The entire progress control is disabled when the active GSMTC session is not see
 
 | Option | Type | Default | Range | Description |
 |---|---|---:|---|---|
-| `icon_size` | integer | `32` | `8–64` | Popup previous/play/next icon size in logical pixels. Button hit targets expand when needed. |
+| `size` | integer | `43` | `20–96` | Popup control reference size in logical pixels. Play/pause uses this size; previous/next and all icons retain their existing proportions. |
 
-The full option path is `popup.controls.icon_size`.
+The full option path is `popup.controls.size`. The container and icon always scale together.
 
 ---
 
@@ -343,7 +343,7 @@ The backend selector's full option path is `popup.equalizer.backend`.
 |---|---|---:|---|---|
 | `preset` | string | `"Flat"` | See presets below | Initial equalizer curve. |
 | `custom_bands` | list[int] | Ten `0`s | Exactly 10 values, each `-12–12` dB | Curve used by the `Custom` preset. |
-| `preset_effect` | string | `"lightning"` | `lightning`, `none` | Animation played when selecting presets. |
+| `preset_effect` | string | `"lightning"` | `lightning`, `ripple`, `center_pulse`, `none` | Animation played when selecting presets. |
 | `effect_speed` | float | `1.0` | `0.4–3.0` | Effect-duration multiplier. `<1` is faster; `>1` is slower. |
 | `backend` | string | `"visual"` | `visual`, `equalizer_apo` | Select UI-only mode or Equalizer APO integration. |
 | `apo` | object | See below | — | Equalizer APO configuration. |
@@ -378,6 +378,17 @@ Classic
 ```
 
 `Custom` is selected automatically when a band is manually changed, or it can be selected through configuration using `custom_bands`.
+
+## Preset effects
+
+| Value | Behavior |
+|---|---|
+| `lightning` | Existing full-section lightning sweep and ring effect. |
+| `ripple` | A low-to-high band sweep with roughly 25 ms between bands, short ease-out overshoot, and a highlight clipped inside each rounded fill. |
+| `center_pulse` | Starts at the two middle bands and propagates outward symmetrically with the same clipped internal highlight. |
+| `none` | Changes the band values without a special preset effect. |
+
+`effect_speed` multiplies the animation duration. Values below `1.0` are faster; values above `1.0` are slower.
 
 ## Band order
 
@@ -1368,7 +1379,7 @@ control the actual media-background rendering.
 
 ### Equalizer effects
 
-The preset lightning effect is custom-painted. QSS styles the band chrome, handles, labels, and buttons, but does not define the lightning animation itself.
+The lightning, ripple, and center-pulse preset effects are custom-painted. QSS styles the band chrome, handles, labels, and buttons, but does not define these animations.
 
 ---
 

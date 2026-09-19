@@ -14,7 +14,8 @@ Media V2's popup design and motion are inspired by the media widget in [Serpanti
 - Bar artwork, title, timeline, and transport controls.
 - One-click `Via ...` player selection with automatic and manual modes.
 - Configurable popup layout, artwork position, progress display, background, disc visualizer, and equalizer.
-- Independent bar and popup scrolling, artwork size, and control icon sizes.
+- Independent bar and popup scrolling, artwork size, and proportional control sizes.
+- Equalizer preset effects including lightning, low-to-high ripple, and center-out pulse.
 - YASB-compatible callbacks, keybindings, semantic QSS selectors, and accessibility.
 
 **Audio Visualizer media label**

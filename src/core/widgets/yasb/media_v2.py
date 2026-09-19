@@ -115,7 +115,7 @@ class MediaWidgetV2(BaseWidget):
             config.scale,
             self.bar_surface,
             compact=config.compact,
-            icon_size=config.controls.icon_size,
+            control_size=config.controls.size,
         )
         self._row.addWidget(self.controls)
         self._wire_controls(self.controls)

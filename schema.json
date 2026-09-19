@@ -8418,11 +8418,11 @@
     "MediaControlsConfig": {
       "additionalProperties": false,
       "properties": {
-        "icon_size": {
-          "default": 18,
-          "maximum": 64,
-          "minimum": 8,
-          "title": "Icon Size",
+        "size": {
+          "default": 30,
+          "maximum": 96,
+          "minimum": 20,
+          "title": "Size",
           "type": "integer"
         }
       },
@@ -8553,6 +8553,8 @@
           "default": "lightning",
           "enum": [
             "lightning",
+            "ripple",
+            "center_pulse",
             "none"
           ],
           "title": "Preset Effect",

@@ -64,7 +64,7 @@ class MediaEqualizerApoConfig(CustomBaseModel):
 class MediaEqualizerConfig(CustomBaseModel):
     preset: Preset = "Flat"
     custom_bands: list[Gain] = Field(default_factory=lambda: [0] * 10, min_length=10, max_length=10)
-    preset_effect: Literal["lightning", "none"] = "lightning"
+    preset_effect: Literal["lightning", "ripple", "center_pulse", "none"] = "lightning"
     effect_speed: float = Field(default=1.0, ge=0.4, le=3.0, allow_inf_nan=False)
     backend: Literal["visual", "equalizer_apo"] = "visual"
     apo: MediaEqualizerApoConfig = Field(default_factory=MediaEqualizerApoConfig)
@@ -101,7 +101,7 @@ class MediaProgressConfig(CustomBaseModel):
 
 
 class MediaControlsConfig(CustomBaseModel):
-    icon_size: int = Field(default=18, ge=8, le=64)
+    size: int = Field(default=30, ge=20, le=96)
 
 
 class MediaV2PopupConfig(CustomBaseModel):
@@ -121,7 +121,7 @@ class MediaV2PopupConfig(CustomBaseModel):
     scroll_artist: bool = False
     scrolling_label: MediaScrollingConfig = Field(default_factory=MediaScrollingConfig)
     progress: MediaProgressConfig = Field(default_factory=MediaProgressConfig)
-    controls: MediaControlsConfig = Field(default_factory=lambda: MediaControlsConfig(icon_size=32))
+    controls: MediaControlsConfig = Field(default_factory=lambda: MediaControlsConfig(size=43))
     artwork_position: Literal["left", "right", "top", "hidden"] = "left"
     detail_order: list[Literal["title", "artist", "output", "timeline", "controls"]] = Field(
         default_factory=lambda: ["title", "artist", "output", "timeline", "controls"],

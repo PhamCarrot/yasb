@@ -654,42 +654,41 @@ class TransportButton(MediaButton):
 
 
 class TransportControls(QFrame):
-    def __init__(self, scale, parent=None, *, popup=False, compact=False, icon_size=None):
+    def __init__(self, scale, parent=None, *, popup=False, compact=False, control_size=None):
         super().__init__(parent)
         identify(self, "media-controls", "media-controls")
         self._scale = float(scale)
         self._popup = popup
-        self._icon_size = float(icon_size if icon_size is not None else (32 if popup else 18))
+        self._control_size = float(control_size if control_size is not None else (43 if popup else 30))
         s = lambda value: round(value * self._scale)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(s(18 if popup else (3 if compact else 4)))
-        side = 32 if popup else (28 if compact else 30)
-        play = 43 if popup else side
-        play_icon = s(self._icon_size)
-        side_icon = s(self._icon_size * (21 / 32 if popup else 16 / 18))
-        self.previous = TransportButton("previous", max(s(side), side_icon + 4), side_icon, self)
-        self.play = TransportButton("play", max(s(play), play_icon + 4), play_icon, self)
-        self.next = TransportButton("next", max(s(side), side_icon + 4), side_icon, self)
+        self.previous = TransportButton("previous", 1, 1, self)
+        self.play = TransportButton("play", 1, 1, self)
+        self.next = TransportButton("next", 1, 1, self)
         for button in (self.previous, self.play, self.next):
             layout.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
             button.setEnabled(False)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.set_metrics(scale=self._scale, compact=compact)
 
     def set_metrics(self, *, scale=None, compact=False):
         """Apply one coherent metric set to geometry, icons, hit targets and spacing."""
         scale = self._scale if scale is None else float(scale)
         compact = max(0.0, min(1.0, float(compact)))
-        side = 32 if self._popup else 30 - 2 * compact
-        play = 43 if self._popup else side
+        reference = 43 if self._popup else 30
+        factor = self._control_size / reference
+        side = 32 * factor if self._popup else (30 - 2 * compact) * factor
+        play = 43 * factor if self._popup else side
         spacing = 18 if self._popup else 4 - compact
-        play_icon = round(self._icon_size * scale)
-        side_icon = round(self._icon_size * (21 / 32 if self._popup else 16 / 18) * scale)
+        play_icon = round((32 if self._popup else 18) * factor * scale)
+        side_icon = round((21 if self._popup else 16) * factor * scale)
         icons = (side_icon, play_icon, side_icon)
         sizes = (
-            max(round(side * scale), side_icon + 4),
-            max(round(play * scale), play_icon + 4),
-            max(round(side * scale), side_icon + 4),
+            round(side * scale),
+            round(play * scale),
+            round(side * scale),
         )
         for button, size, icon in zip((self.previous, self.play, self.next), sizes, icons):
             button.setFixedSize(size, size)
