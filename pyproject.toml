@@ -22,6 +22,8 @@ dependencies = [
     "holidays==0.103",
     "watchdog==6.0.0",
     "pycaw==20251023",
+    "numpy==2.5.2",
+    "pyaudiowpatch==0.2.12.8",
     "pillow==12.3.0",
     "qasync==0.28.0",
     "comtypes==1.4.16",

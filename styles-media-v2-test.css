@@ -1,0 +1,166 @@
+/* Media Widget V2 — public YASB-native styling example */
+.media-v2-widget,
+.media-v2-popup,
+#media-v2,
+#media-v2-popup {
+    color: #cdd6f4;
+    background: transparent;
+    font-family: "Cascadia Mono", "Consolas";
+}
+
+.media-v2-widget .widget-container {
+    background: #1e1e2e;
+    border-radius: 8px;
+    margin: 0;
+    padding: 0;
+}
+
+/* Compatibility hook; new themes should style .widget-container first. */
+.media-v2-widget #media-v2-bar,
+#media-v2 #media-v2-bar {
+    background: transparent;
+    border: none;
+}
+
+.media-v2-widget .media-title,
+.media-v2-popup .media-title { color: #cdd6f4; font-weight: 900; }
+.media-v2-widget .media-time,
+.media-v2-popup .media-artist,
+.media-v2-popup .media-output-label,
+.media-v2-popup .equalizer-status { color: #a6adc8; }
+.media-v2-widget .media-art { background: #45475a; color: #cba6f7; }
+.media-v2-popup .media-art { background: transparent; color: #cba6f7; }
+
+.media-v2-widget .btn.media-info {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+.media-v2-widget .btn.media-info:hover {
+    background: rgba(205, 214, 244, 0.12);
+    border-radius: 8px;
+}
+
+.media-v2-widget .media-controls .btn,
+.media-v2-popup .media-controls .btn {
+    color: #cdd6f4;
+    background: #313244;
+    border: none;
+}
+.media-v2-widget .media-controls .btn.square,
+.media-v2-popup .media-controls .btn.square { border-radius: 0; }
+.media-v2-widget .media-controls .btn.rounded,
+.media-v2-popup .media-controls .btn.rounded { border-radius: 8px; }
+.media-v2-widget .media-controls .btn.circle,
+.media-v2-popup .media-controls .btn.circle { border-radius: 999px; }
+.media-v2-widget .media-controls .btn:hover,
+.media-v2-popup .media-controls .btn:hover { color: #89b4fa; background: #45475a; }
+.media-v2-widget .media-controls .btn:pressed,
+.media-v2-popup .media-controls .btn:pressed { background: #313244; }
+.media-v2-widget .media-controls .btn:disabled,
+.media-v2-popup .media-controls .btn:disabled { color: #6c7086; background: #313244; }
+.media-v2-popup .media-controls .btn.play:hover { color: #cba6f7; }
+
+.media-v2-popup .media-surface {
+    background: #1e1e2e;
+    border: none;
+    border-radius: 6px;
+}
+
+.media-v2-popup .media-source,
+.media-v2-popup .media-player-selector,
+.media-v2-popup .media-output-label {
+    color: #a6adc8;
+    background: #313244;
+    border: none;
+    border-radius: 8px;
+    padding: 0 10px;
+}
+.media-v2-popup .media-source:hover,
+.media-v2-popup .media-player-selector:hover { color: #cdd6f4; background: #45475a; }
+.media-v2-popup .media-source:pressed { color: #cdd6f4; background: #585b70; }
+.media-v2-popup .media-source:disabled,
+.media-v2-popup .media-output-label:disabled { color: #7f849c; }
+.media-v2-popup .media-player-selector::drop-down {
+    background: transparent;
+    border: none;
+    width: 18px;
+    border-top-right-radius: 8px;
+    border-bottom-right-radius: 8px;
+}
+
+.media-player-menu {
+    color: #cdd6f4;
+    background: #181825;
+    border: 1px solid #585b70;
+    border-radius: 8px;
+    outline: none;
+    padding: 4px;
+}
+.media-player-menu::item { min-height: 26px; padding: 0 8px; border-radius: 4px; }
+.media-player-menu::item:selected { color: #11111b; background: #cba6f7; }
+.media-player-menu::item:checked { color: #cba6f7; }
+
+.media-v2-popup .media-progress {
+    background: transparent;
+    border: none;
+    outline: none;
+    padding: 0;
+    min-width: 260px;
+    max-width: 260px;
+}
+.media-v2-popup .media-progress-track { background: #313244; border: none; border-radius: 3px; }
+.media-v2-popup .media-progress-fill { background: #89b4fa; border: none; border-radius: 3px; }
+.media-v2-popup .media-progress-handle { background: #cdd6f4; border: none; border-radius: 999px; }
+.media-v2-popup .media-progress-fill:disabled,
+.media-v2-popup .media-progress-handle:disabled { background: #585b70; }
+
+.media-v2-popup .media-separator {
+    min-height: 2px;
+    max-height: 2px;
+    background: #585b70;
+    margin: 10px 0;
+}
+
+.media-v2-popup .equalizer-section { background: transparent; }
+.media-v2-popup .equalizer { color: #cba6f7; }
+.media-v2-popup .equalizer-title { color: #cba6f7; font-weight: 900; }
+.media-v2-popup .equalizer-current { color: #cdd6f4; font-weight: 900; }
+.media-v2-popup .presets .btn.preset {
+    color: #a6adc8;
+    background: #313244;
+    border: none;
+    border-radius: 8px;
+}
+.media-v2-popup .presets .btn.preset:hover { color: #cdd6f4; background: #45475a; }
+.media-v2-popup .presets .btn.preset:pressed { color: #cdd6f4; background: #585b70; }
+.media-v2-popup .presets .btn.preset:checked { color: #11111b; background: #cba6f7; }
+.media-v2-popup .equalizer QLabel { color: #7f849c; }
+.media-v2-popup .eq-band::groove:vertical {
+    width: 12px;
+    background: #313244;
+    border-radius: 6px;
+}
+.media-v2-popup .eq-band::handle:vertical {
+    height: 16px;
+    margin: 0 -2px;
+    background: #cdd6f4;
+    border-radius: 8px;
+}
+.media-v2-popup .eq-band::handle:vertical:hover { background: #e9bfff; }
+.media-v2-popup .eq-band::handle:vertical:pressed { background: #f5c2e7; }
+.media-v2-popup .eq-band::add-page:vertical { background: #cba6f7; border-radius: 6px; }
+
+.tooltip,
+.tooltip.dark {
+    color: #cdd6f4;
+    background: #181825;
+    border: 1px solid #585b70;
+    border-radius: 8px;
+    padding: 5px 8px;
+}
+
+.media-visualizer-widget .media-label {
+    color: #cdd6f4;
+    background: transparent;
+}

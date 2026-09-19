@@ -8,14 +8,13 @@ from ctypes import POINTER, Structure, c_ubyte, c_uint16, c_uint32, c_uint64, c_
 
 import win32event
 from comtypes import CLSCTX_ALL, COMMETHOD, GUID, HRESULT, COMError, IUnknown
-from pycaw.callbacks import MMNotificationClient
-from pycaw.constants import DEVICE_STATE
 from pycaw.pycaw import AudioUtilities, EDataFlow, ERole, IAudioClient
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 from core.utils.win32.bindings.ole32 import COINIT_MULTITHREADED, RPC_E_CHANGED_MODE, ole32
 from core.widgets.services.audio_visualizer.spectrum import FFT_SIZE, SpectrumSource
+from core.widgets.services.media.audio_device import DefaultAudioOutputService
 
 # Channel selectors a widget can ask for.
 _CHANNELS = ("left", "right", "average")
@@ -263,69 +262,6 @@ class _WasapiLoopbackClient:
             logging.debug("Audio visualizer: WASAPI client teardown failed", exc_info=True)
 
 
-class _RenderDeviceWatcher(MMNotificationClient):
-    """Asks the capture thread to rebuild its client when the endpoint changes.
-
-    Registered on the UI thread, matching how ``services/volume`` does it. The
-    callbacks only flip a flag and signal an event, so they never block the
-    audio service that invokes them.
-    """
-
-    def __init__(self, service: AudioVisualizerCaptureService) -> None:
-        super().__init__()
-        self._service = service
-        self._last_device_id = self._current_render_device_id()
-        self._last_states: dict[str, int] = {}
-
-    @staticmethod
-    def _current_render_device_id() -> str | None:
-        try:
-            enumerator = AudioUtilities.GetDeviceEnumerator()
-            endpoint = enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender.value, ERole.eMultimedia.value)
-            return endpoint.GetId()
-        except Exception:
-            return None
-
-    def on_default_device_changed(self, flow, flow_id, role, role_id, default_device_id) -> None:
-        logging.debug(
-            "Audio visualizer: default device changed flow=%s role=%s device=%s",
-            flow_id,
-            role_id,
-            default_device_id,
-        )
-        if flow_id != EDataFlow.eRender.value or role_id != ERole.eMultimedia.value:
-            return
-        if default_device_id == self._last_device_id:
-            return
-        self._last_device_id = default_device_id
-        logging.debug("Audio visualizer: default device change accepted, reopening")
-        self._service.request_reopen()
-
-    def on_device_state_changed(self, device_id, new_state, new_state_id) -> None:
-        logging.debug(
-            "Audio visualizer: device state changed device=%s state=%#x",
-            device_id,
-            new_state_id,
-        )
-        # A device connecting or disconnecting can touch several unrelated
-        # endpoints (a headset's own microphone, other devices Windows
-        # happens to re-enumerate along the way), only the one we are
-        # actually reading from matters to a render-only loopback capture.
-        if device_id != self._last_device_id:
-            return
-        if new_state_id not in (
-            DEVICE_STATE.ACTIVE.value,
-            DEVICE_STATE.DISABLED.value,
-            DEVICE_STATE.UNPLUGGED.value,
-        ):
-            return
-        if self._last_states.get(device_id) == new_state_id:
-            return
-        self._last_states[device_id] = new_state_id
-        logging.debug("Audio visualizer: device state change accepted, reopening")
-        self._service.request_reopen()
-
-
 class AudioVisualizerCaptureService(QObject):
     """Shared, event-driven loopback capture for every visualizer widget.
 
@@ -374,8 +310,8 @@ class AudioVisualizerCaptureService(QObject):
         self._device_dirty = False
         self._format_rejected = False
         self._thread: threading.Thread | None = None
-        self._enumerator = None
-        self._watcher: _RenderDeviceWatcher | None = None
+        self._output_service = DefaultAudioOutputService.instance()
+        self._output_service.default_output_refreshed.connect(self._on_default_output_refreshed)
 
         self._audio_event = win32event.CreateEvent(None, False, False, None)  # auto-reset
         self._wake_event = win32event.CreateEvent(None, False, False, None)  # auto-reset
@@ -505,6 +441,10 @@ class AudioVisualizerCaptureService(QObject):
             self._format_rejected = False
         win32event.SetEvent(self._wake_event)
 
+    def _on_default_output_refreshed(self, _state) -> None:
+        logging.debug("Audio visualizer: default render endpoint refreshed, reopening")
+        self.request_reopen()
+
     def _ensure_thread(self) -> None:
         # Only ever called from the UI thread (via attach), so the read of
         # _thread and the start below cannot race each other.
@@ -513,7 +453,6 @@ class AudioVisualizerCaptureService(QObject):
             if self._running and thread is not None and thread.is_alive():
                 return
             self._running = True
-        self._register_device_watcher()
         win32event.ResetEvent(self._stop_event)
         self._thread = threading.Thread(target=self._capture_thread, name="yasb-audio-visualizer", daemon=True)
         self._thread.start()
@@ -526,43 +465,23 @@ class AudioVisualizerCaptureService(QObject):
             self._refresh_readers()
             was_running = self._running
             self._running = False
-        if not was_running:
-            return
 
-        win32event.SetEvent(self._stop_event)
-        thread, self._thread = self._thread, None
-        if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
-            thread.join(timeout=2.0)
-            if thread.is_alive():
-                logging.warning("Audio visualizer: capture thread did not exit in time")
+        if was_running:
+            win32event.SetEvent(self._stop_event)
+            thread, self._thread = self._thread, None
+            if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+                thread.join(timeout=2.0)
+                if thread.is_alive():
+                    logging.warning("Audio visualizer: capture thread did not exit in time")
 
-        self._unregister_device_watcher()
+        try:
+            self._output_service.default_output_refreshed.disconnect(self._on_default_output_refreshed)
+        except RuntimeError, TypeError:
+            pass
         with self._lock:
             self._ring_l.clear()
             self._ring_r.clear()
             self._active = False
-
-    def _register_device_watcher(self) -> None:
-        if self._watcher is not None:
-            return
-        try:
-            self._enumerator = AudioUtilities.GetDeviceEnumerator()
-            self._watcher = _RenderDeviceWatcher(self)
-            self._enumerator.RegisterEndpointNotificationCallback(self._watcher)
-        except Exception:
-            self._watcher = None
-            self._enumerator = None
-            logging.warning("Audio visualizer: device change notifications unavailable", exc_info=True)
-
-    def _unregister_device_watcher(self) -> None:
-        watcher, self._watcher = self._watcher, None
-        enumerator, self._enumerator = self._enumerator, None
-        if watcher is None or enumerator is None:
-            return
-        try:
-            enumerator.UnregisterEndpointNotificationCallback(watcher)
-        except Exception:
-            logging.debug("Audio visualizer: could not unregister device watcher", exc_info=True)
 
     def _capture_thread(self) -> None:
         hr = ole32.CoInitializeEx(None, COINIT_MULTITHREADED)

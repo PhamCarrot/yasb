@@ -8222,6 +8222,279 @@
       "title": "MaxFieldSizeConfig",
       "type": "object"
     },
+    "MediaBackgroundConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "album_art",
+          "enum": [
+            "color",
+            "album_art",
+            "image"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Color"
+        },
+        "image": {
+          "default": "",
+          "title": "Image",
+          "type": "string"
+        },
+        "blur_radius": {
+          "default": 18,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Blur Radius",
+          "type": "integer"
+        },
+        "ambient_motion": {
+          "default": true,
+          "title": "Ambient Motion",
+          "type": "boolean"
+        },
+        "ambient_paused_opacity": {
+          "default": 0.01,
+          "maximum": 0.08,
+          "minimum": 0.0,
+          "title": "Ambient Paused Opacity",
+          "type": "number"
+        }
+      },
+      "title": "MediaBackgroundConfig",
+      "type": "object"
+    },
+    "MediaBarScrollingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "speed": {
+          "default": 40.0,
+          "maximum": 200.0,
+          "minimum": 5.0,
+          "title": "Speed",
+          "type": "number"
+        },
+        "delay": {
+          "default": 3000,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Delay",
+          "type": "integer"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "MediaBarScrollingConfig",
+      "type": "object"
+    },
+    "MediaBorderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "framerate": {
+          "default": 60,
+          "maximum": 120,
+          "minimum": 15,
+          "title": "Framerate",
+          "type": "integer"
+        },
+        "charge_duration": {
+          "default": 1.2,
+          "maximum": 5.0,
+          "minimum": 0.2,
+          "title": "Charge Duration",
+          "type": "number"
+        },
+        "rotation_duration": {
+          "default": 5.0,
+          "maximum": 30.0,
+          "minimum": 1.0,
+          "title": "Rotation Duration",
+          "type": "number"
+        }
+      },
+      "title": "MediaBorderConfig",
+      "type": "object"
+    },
+    "MediaControlsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "scale": {
+          "default": 1.0,
+          "maximum": 1.5,
+          "minimum": 0.75,
+          "title": "Scale",
+          "type": "number"
+        }
+      },
+      "title": "MediaControlsConfig",
+      "type": "object"
+    },
+    "MediaDiscConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "spin": {
+          "default": true,
+          "title": "Spin",
+          "type": "boolean"
+        },
+        "visualizer": {
+          "default": true,
+          "title": "Visualizer",
+          "type": "boolean"
+        },
+        "rhythm": {
+          "default": true,
+          "title": "Rhythm",
+          "type": "boolean"
+        },
+        "glow": {
+          "default": true,
+          "title": "Glow",
+          "type": "boolean"
+        },
+        "rhythm_strength": {
+          "default": 1.0,
+          "maximum": 3.0,
+          "minimum": 0.0,
+          "title": "Rhythm Strength",
+          "type": "number"
+        },
+        "glow_strength": {
+          "default": 1.0,
+          "maximum": 3.0,
+          "minimum": 0.0,
+          "title": "Glow Strength",
+          "type": "number"
+        },
+        "framerate": {
+          "default": 30,
+          "maximum": 60,
+          "minimum": 15,
+          "title": "Framerate",
+          "type": "integer"
+        }
+      },
+      "title": "MediaDiscConfig",
+      "type": "object"
+    },
+    "MediaEqualizerApoConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "target_device": {
+          "const": "default",
+          "default": "default",
+          "title": "Target Device",
+          "type": "string"
+        },
+        "auto_preamp": {
+          "default": true,
+          "title": "Auto Preamp",
+          "type": "boolean"
+        },
+        "preamp_db": {
+          "default": 0.0,
+          "maximum": 12.0,
+          "minimum": -24.0,
+          "title": "Preamp Db",
+          "type": "number"
+        },
+        "write_debounce_ms": {
+          "default": 100,
+          "maximum": 500,
+          "minimum": 50,
+          "title": "Write Debounce Ms",
+          "type": "integer"
+        },
+        "manage_include": {
+          "default": false,
+          "title": "Manage Include",
+          "type": "boolean"
+        }
+      },
+      "title": "MediaEqualizerApoConfig",
+      "type": "object"
+    },
+    "MediaEqualizerConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "preset": {
+          "default": "Flat",
+          "enum": [
+            "Flat",
+            "Bass",
+            "Treble",
+            "Vocal",
+            "Pop",
+            "Rock",
+            "Jazz",
+            "Classic",
+            "Custom"
+          ],
+          "title": "Preset",
+          "type": "string"
+        },
+        "custom_bands": {
+          "items": {
+            "maximum": 12,
+            "minimum": -12,
+            "type": "integer"
+          },
+          "maxItems": 10,
+          "minItems": 10,
+          "title": "Custom Bands",
+          "type": "array"
+        },
+        "preset_effect": {
+          "default": "lightning",
+          "enum": [
+            "lightning",
+            "none"
+          ],
+          "title": "Preset Effect",
+          "type": "string"
+        },
+        "effect_speed": {
+          "default": 1.0,
+          "maximum": 3.0,
+          "minimum": 0.4,
+          "title": "Effect Speed",
+          "type": "number"
+        },
+        "backend": {
+          "default": "visual",
+          "enum": [
+            "visual",
+            "equalizer_apo"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "apo": {
+          "$ref": "#/$defs/MediaEqualizerApoConfig"
+        }
+      },
+      "title": "MediaEqualizerConfig",
+      "type": "object"
+    },
     "MediaIconsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -8697,6 +8970,46 @@
       "title": "MediaProgressBarConfig",
       "type": "object"
     },
+    "MediaProgressConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "smoothing_ms": {
+          "default": 250,
+          "maximum": 2000,
+          "minimum": 0,
+          "title": "Smoothing Ms",
+          "type": "integer"
+        },
+        "show_handle": {
+          "default": true,
+          "title": "Show Handle",
+          "type": "boolean"
+        }
+      },
+      "title": "MediaProgressConfig",
+      "type": "object"
+    },
+    "MediaScrollingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "speed": {
+          "default": 40.0,
+          "maximum": 200.0,
+          "minimum": 5.0,
+          "title": "Speed",
+          "type": "number"
+        },
+        "delay": {
+          "default": 3000,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Delay",
+          "type": "integer"
+        }
+      },
+      "title": "MediaScrollingConfig",
+      "type": "object"
+    },
     "MediaSectionConfig": {
       "additionalProperties": false,
       "properties": {
@@ -8753,6 +9066,547 @@
         }
       },
       "title": "MediaSectionIconsConfig",
+      "type": "object"
+    },
+    "MediaV2Config": {
+      "additionalProperties": false,
+      "properties": {
+        "class_name": {
+          "default": "",
+          "title": "Class Name",
+          "type": "string"
+        },
+        "hide_empty": {
+          "default": false,
+          "title": "Hide Empty",
+          "type": "boolean"
+        },
+        "compact": {
+          "default": false,
+          "title": "Compact",
+          "type": "boolean"
+        },
+        "layout": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "minimal"
+          ],
+          "title": "Layout",
+          "type": "string"
+        },
+        "artwork_shape": {
+          "default": "rounded",
+          "enum": [
+            "square",
+            "rounded",
+            "circle"
+          ],
+          "title": "Artwork Shape",
+          "type": "string"
+        },
+        "controls_shape": {
+          "default": "rounded",
+          "enum": [
+            "square",
+            "rounded",
+            "circle"
+          ],
+          "title": "Controls Shape",
+          "type": "string"
+        },
+        "scale": {
+          "default": 1.0,
+          "maximum": 2.0,
+          "minimum": 0.75,
+          "title": "Scale",
+          "type": "number"
+        },
+        "bar_height": {
+          "default": 30,
+          "maximum": 100,
+          "minimum": 28,
+          "title": "Bar Height",
+          "type": "integer"
+        },
+        "border_radius": {
+          "default": 8,
+          "maximum": 32,
+          "minimum": 0,
+          "title": "Border Radius",
+          "type": "integer"
+        },
+        "font_family": {
+          "default": "Adwaita Mono",
+          "title": "Font Family",
+          "type": "string"
+        },
+        "use_default_styles": {
+          "default": true,
+          "title": "Use Default Styles",
+          "type": "boolean"
+        },
+        "scrolling_label": {
+          "$ref": "#/$defs/MediaBarScrollingConfig"
+        },
+        "controls": {
+          "$ref": "#/$defs/MediaControlsConfig"
+        },
+        "popup": {
+          "$ref": "#/$defs/MediaV2PopupConfig"
+        },
+        "callbacks": {
+          "$ref": "#/$defs/CallbacksConfig"
+        },
+        "keybindings": {
+          "items": {
+            "$ref": "#/$defs/KeybindingConfig"
+          },
+          "title": "Keybindings",
+          "type": "array"
+        }
+      },
+      "title": "MediaV2Config",
+      "type": "object"
+    },
+    "MediaV2Entry": {
+      "properties": {
+        "type": {
+          "const": "yasb.media_v2.MediaWidgetV2",
+          "title": "Type",
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/MediaV2Config"
+        }
+      },
+      "required": [
+        "type",
+        "options"
+      ],
+      "title": "MediaV2Entry",
+      "type": "object"
+    },
+    "MediaV2PopupConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "blur": {
+          "default": true,
+          "title": "Blur",
+          "type": "boolean"
+        },
+        "round_corners": {
+          "default": true,
+          "title": "Round Corners",
+          "type": "boolean"
+        },
+        "round_corners_type": {
+          "default": "normal",
+          "title": "Round Corners Type",
+          "type": "string"
+        },
+        "border_color": {
+          "default": "System",
+          "title": "Border Color",
+          "type": "string"
+        },
+        "alignment": {
+          "default": "right",
+          "enum": [
+            "left",
+            "right",
+            "center"
+          ],
+          "title": "Alignment",
+          "type": "string"
+        },
+        "direction": {
+          "default": "down",
+          "enum": [
+            "up",
+            "down"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "offset_top": {
+          "default": 6,
+          "maximum": 500,
+          "minimum": -500,
+          "title": "Offset Top",
+          "type": "integer"
+        },
+        "offset_left": {
+          "default": 0,
+          "maximum": 500,
+          "minimum": -500,
+          "title": "Offset Left",
+          "type": "integer"
+        },
+        "show_equalizer": {
+          "default": true,
+          "title": "Show Equalizer",
+          "type": "boolean"
+        },
+        "scroll_title": {
+          "default": true,
+          "title": "Scroll Title",
+          "type": "boolean"
+        },
+        "scroll_artist": {
+          "default": false,
+          "title": "Scroll Artist",
+          "type": "boolean"
+        },
+        "scrolling_label": {
+          "$ref": "#/$defs/MediaScrollingConfig"
+        },
+        "progress": {
+          "$ref": "#/$defs/MediaProgressConfig"
+        },
+        "controls": {
+          "$ref": "#/$defs/MediaControlsConfig"
+        },
+        "artwork_position": {
+          "default": "left",
+          "enum": [
+            "left",
+            "right",
+            "top",
+            "hidden"
+          ],
+          "title": "Artwork Position",
+          "type": "string"
+        },
+        "detail_order": {
+          "items": {
+            "enum": [
+              "title",
+              "artist",
+              "output",
+              "timeline",
+              "controls"
+            ],
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Detail Order",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "timestamps": {
+          "default": "below",
+          "enum": [
+            "above",
+            "below",
+            "inline",
+            "hidden"
+          ],
+          "title": "Timestamps",
+          "type": "string"
+        },
+        "time_display": {
+          "default": "total",
+          "enum": [
+            "total",
+            "remaining"
+          ],
+          "title": "Time Display",
+          "type": "string"
+        },
+        "equalizer_position": {
+          "default": "bottom",
+          "enum": [
+            "top",
+            "bottom"
+          ],
+          "title": "Equalizer Position",
+          "type": "string"
+        },
+        "show_separator": {
+          "default": true,
+          "title": "Show Separator",
+          "type": "boolean"
+        },
+        "disc": {
+          "$ref": "#/$defs/MediaDiscConfig"
+        },
+        "equalizer": {
+          "$ref": "#/$defs/MediaEqualizerConfig"
+        },
+        "background": {
+          "$ref": "#/$defs/MediaBackgroundConfig"
+        },
+        "border": {
+          "$ref": "#/$defs/MediaBorderConfig"
+        }
+      },
+      "title": "MediaV2PopupConfig",
+      "type": "object"
+    },
+    "MediaVisualizerConfig": {
+      "additionalProperties": false,
+      "description": "Audio Visualizer options plus a foreground media label.\n\nEvery visualizer option (style, height, smoothness, sensitivity,\nauto_gain, framerate, bars/waves/dots, ...) is inherited unchanged, so an\nexisting ``audio_visualizer`` block can be reused unchanged.",
+      "properties": {
+        "class_name": {
+          "default": "",
+          "title": "Class Name",
+          "type": "string"
+        },
+        "style": {
+          "default": "bars",
+          "enum": [
+            "bars",
+            "waves",
+            "dots"
+          ],
+          "title": "Style",
+          "type": "string"
+        },
+        "height": {
+          "default": 14,
+          "maximum": 64,
+          "minimum": 4,
+          "title": "Height",
+          "type": "integer"
+        },
+        "smoothness": {
+          "default": 55,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Smoothness",
+          "type": "integer"
+        },
+        "sensitivity": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Sensitivity",
+          "type": "integer"
+        },
+        "auto_gain": {
+          "default": true,
+          "title": "Auto Gain",
+          "type": "boolean"
+        },
+        "framerate": {
+          "default": 60,
+          "maximum": 120,
+          "minimum": 1,
+          "title": "Framerate",
+          "type": "integer"
+        },
+        "freq_min": {
+          "default": 50,
+          "maximum": 24000,
+          "minimum": 20,
+          "title": "Freq Min",
+          "type": "integer"
+        },
+        "freq_max": {
+          "default": 12000,
+          "maximum": 24000,
+          "minimum": 20,
+          "title": "Freq Max",
+          "type": "integer"
+        },
+        "hide_idle": {
+          "default": false,
+          "title": "Hide Idle",
+          "type": "boolean"
+        },
+        "hide_idle_after": {
+          "default": 2000,
+          "maximum": 60000,
+          "minimum": 100,
+          "title": "Hide Idle After",
+          "type": "integer"
+        },
+        "channels": {
+          "default": "mono",
+          "enum": [
+            "stereo",
+            "mono"
+          ],
+          "title": "Channels",
+          "type": "string"
+        },
+        "mono_option": {
+          "default": "average",
+          "enum": [
+            "average",
+            "left",
+            "right"
+          ],
+          "title": "Mono Option",
+          "type": "string"
+        },
+        "reverse": {
+          "default": false,
+          "title": "Reverse",
+          "type": "boolean"
+        },
+        "mirror": {
+          "default": false,
+          "title": "Mirror",
+          "type": "boolean"
+        },
+        "edge_fade": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          ],
+          "default": 0,
+          "title": "Edge Fade"
+        },
+        "bars": {
+          "$ref": "#/$defs/BarsStyleConfig"
+        },
+        "waves": {
+          "$ref": "#/$defs/WavesStyleConfig"
+        },
+        "dots": {
+          "$ref": "#/$defs/DotsStyleConfig"
+        },
+        "keybindings": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/KeybindingConfig"
+          },
+          "title": "Keybindings",
+          "type": "array"
+        },
+        "callbacks": {
+          "$ref": "#/$defs/CallbacksConfig",
+          "default": {
+            "on_left": "do_nothing",
+            "on_middle": "do_nothing",
+            "on_right": "do_nothing"
+          }
+        },
+        "show_label": {
+          "default": true,
+          "title": "Show Label",
+          "type": "boolean"
+        },
+        "label": {
+          "default": "{title}",
+          "title": "Label",
+          "type": "string"
+        },
+        "separator": {
+          "default": " - ",
+          "title": "Separator",
+          "type": "string"
+        },
+        "max_label_length": {
+          "default": 30,
+          "maximum": 200,
+          "minimum": 0,
+          "title": "Max Label Length",
+          "type": "integer"
+        },
+        "scrolling_label": {
+          "$ref": "#/$defs/MediaVisualizerScrollingLabelConfig",
+          "default": {
+            "enabled": false,
+            "speed": 30,
+            "delay": 1500,
+            "style": "left",
+            "separator": "   ",
+            "edge_fade": true,
+            "fade_width": 12
+          }
+        },
+        "visualizer_opacity": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Visualizer Opacity",
+          "type": "number"
+        }
+      },
+      "title": "MediaVisualizerConfig",
+      "type": "object"
+    },
+    "MediaVisualizerEntry": {
+      "properties": {
+        "type": {
+          "const": "yasb.media_visualizer.MediaVisualizerWidget",
+          "title": "Type",
+          "type": "string"
+        },
+        "options": {
+          "$ref": "#/$defs/MediaVisualizerConfig"
+        }
+      },
+      "required": [
+        "type",
+        "options"
+      ],
+      "title": "MediaVisualizerEntry",
+      "type": "object"
+    },
+    "MediaVisualizerScrollingLabelConfig": {
+      "additionalProperties": false,
+      "description": "Marquee behaviour for titles wider than the label area.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "speed": {
+          "default": 30,
+          "maximum": 250,
+          "minimum": 1,
+          "title": "Speed",
+          "type": "integer"
+        },
+        "delay": {
+          "default": 1500,
+          "maximum": 60000,
+          "minimum": 0,
+          "title": "Delay",
+          "type": "integer"
+        },
+        "style": {
+          "default": "left",
+          "enum": [
+            "left",
+            "right",
+            "bounce",
+            "bounce-ease"
+          ],
+          "title": "Style",
+          "type": "string"
+        },
+        "separator": {
+          "default": "   ",
+          "title": "Separator",
+          "type": "string"
+        },
+        "edge_fade": {
+          "default": true,
+          "title": "Edge Fade",
+          "type": "boolean"
+        },
+        "fade_width": {
+          "default": 12,
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Fade Width",
+          "type": "integer"
+        }
+      },
+      "title": "MediaVisualizerScrollingLabelConfig",
       "type": "object"
     },
     "MediaWidgetConfig": {
@@ -16270,6 +17124,12 @@
           },
           {
             "$ref": "#/$defs/MediaLiteWidgetEntry"
+          },
+          {
+            "$ref": "#/$defs/MediaV2Entry"
+          },
+          {
+            "$ref": "#/$defs/MediaVisualizerEntry"
           },
           {
             "$ref": "#/$defs/MemoryEntry"

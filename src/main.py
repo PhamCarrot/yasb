@@ -149,6 +149,12 @@ async def main_async(app: YASBApplication):
 
         await app_close_event.wait()
     finally:
+        # PyWinRT event handlers and COM references must be released on their
+        # owning qasync thread before Qt emits aboutToQuit and before the event
+        # loop is drained. aboutToQuit remains an idempotent fallback.
+        from core.widgets.services.media.backend import MediaBackend
+
+        await MediaBackend.aclose_shared()
         # Cancel async tasks while loop is still running
         current = asyncio.current_task()
         tasks = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
