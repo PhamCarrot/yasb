@@ -1,9 +1,20 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from PyQt6.QtCore import QEvent, QObject
+from PyQt6.QtGui import QHideEvent, QPixmap, QShowEvent
+from PyQt6.QtWidgets import QWidget
+
+from core.validation.widgets.yasb.media_v2 import MediaV2Config
+from core.widgets.services.media.model import MediaSessionState, MediaState
+
 """Snapshot-driven media popup. No media service ownership or DSP claims."""
 
 import logging
 from collections import Counter
 
-from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QFrame,
@@ -38,13 +49,13 @@ from core.widgets.yasb.media_v2_styles import media_styles
 logger = logging.getLogger("MediaV2")
 
 
-def session_option_labels(sessions):
+def session_option_labels(sessions: tuple[MediaSessionState, ...]):
     """Return stable, distinct selector labels without exposing native sessions."""
     bases = [session.player.application_name or session.player.app_id or "Media" for session in sessions]
     totals = Counter(bases)
-    ordinals = Counter()
-    used = Counter()
-    labels = []
+    ordinals: Counter[str] = Counter()
+    used: Counter[str] = Counter()
+    labels: list[str] = []
     for session, base in zip(sessions, bases):
         ordinals[base] += 1
         if totals[base] == 1:
@@ -69,7 +80,7 @@ class MediaPopup(PopupWidget):
     session_selected = pyqtSignal(object)
     dismissed = pyqtSignal(bool)
 
-    def __init__(self, parent, config):
+    def __init__(self, parent: QWidget, config: MediaV2Config) -> None:
         super().__init__(
             parent,
             blur=config.popup.blur,
@@ -79,10 +90,10 @@ class MediaPopup(PopupWidget):
             persistent=True,
         )
         self.config = config
-        self._intro = []
+        self._intro: list[RevealEffect] = []
         self._open_pos = QPoint()
         self._closed_pos = QPoint()
-        self.s = lambda value: round(value * config.scale)
+        self.s: Callable[[float], int] = lambda value: round(value * config.scale)
         self._state = None
         self._content_key = None
         self._seek_identity = None
@@ -98,18 +109,20 @@ class MediaPopup(PopupWidget):
         self._fade_animation.setDuration(760)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        self.scroll = QScrollArea(self)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll.setWidgetResizable(False)
-        identify(self.scroll.viewport(), "media-viewport")
-        root.addWidget(self.scroll)
+        self._scroll_area = QScrollArea(self)
+        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_area.setWidgetResizable(False)
+        viewport = self._scroll_area.viewport()
+        assert viewport is not None
+        identify(viewport, "media-viewport")
+        root.addWidget(self._scroll_area)
         self.border = identify(
             MediaBorder(self.s(config.border_radius), config.scale, options=config.popup.border),
             "media-border",
         )
         top_height = 464 if config.popup.artwork_position == "top" else 224
         self.border.setFixedSize(self.s(625), self.s(top_height + 42 + (302 if config.popup.show_equalizer else 0)))
-        self.scroll.setWidget(self.border)
+        self._scroll_area.setWidget(self.border)
         border_layout = QVBoxLayout(self.border)
         border_layout.setContentsMargins(*([self.border.content_inset] * 4))
         self.surface = identify(
@@ -304,7 +317,7 @@ class MediaPopup(PopupWidget):
         self.device.setText(full_name)
         self.device.setAccessibleName(full_name)
 
-    def set_state(self, state, pixmap):
+    def set_state(self, state: MediaState, pixmap: QPixmap):
         old_identity = track_identity(self._state.active) if self._state else None
         active = state.active
         self._state = state
@@ -355,7 +368,7 @@ class MediaPopup(PopupWidget):
         if not self.progress.interacting:
             self._set_times(active.position if active and active.timeline.known else None)
 
-    def _set_times(self, position):
+    def _set_times(self, position: float | None):
         active = self._state.active if self._state else None
         duration = active.duration if active else None
         self.elapsed.setText(format_time(position))
@@ -365,7 +378,7 @@ class MediaPopup(PopupWidget):
             self.duration.setText(format_time(duration))
         self.progress.setAccessibleDescription(f"{format_time(position)} of {format_time(duration)}")
 
-    def _update_sessions(self, state):
+    def _update_sessions(self, state: MediaState):
         sessions = state.usable_sessions
         labels = session_option_labels(sessions)
         options = [(None, "Automatic")] + [(session.session_id, label) for session, label in zip(sessions, labels)]
@@ -402,19 +415,19 @@ class MediaPopup(PopupWidget):
             return
         self.selector.open_at(self.source)
 
-    def _select_session(self, index):
+    def _select_session(self, index: int):
         self.progress.cancel_interaction()
         self.session_selected.emit(self.selector.itemData(index))
 
     def _begin_seek(self):
         self._seek_identity = track_identity(self._state.active) if self._state else None
 
-    def _preview_seek(self, fraction):
+    def _preview_seek(self, fraction: float):
         active = self._state.active if self._state else None
         if active and active.is_seekable and active.duration is not None:
             self._set_times(fraction * active.duration)
 
-    def _finish_seek(self, fraction):
+    def _finish_seek(self, fraction: float):
         active = self._state.active if self._state else None
         if (
             active
@@ -425,11 +438,13 @@ class MediaPopup(PopupWidget):
             self.seek_requested.emit(fraction * active.duration, self._seek_identity)
         self._seek_identity = None
 
-    def open_at_parent(self, *, focus_first=False):
+    def open_at_parent(self, *, focus_first: bool = False):
         self._restore_focus_on_dismiss = False
         self.border.ensurePolished()
-        self.border.layout().activate()
-        self.border.setFixedHeight(self.border.layout().totalSizeHint().height())
+        border_layout = self.border.layout()
+        assert border_layout is not None
+        border_layout.activate()
+        self.border.setFixedHeight(border_layout.totalSizeHint().height())
         if hasattr(self, "equalizer"):
             self.equalizer.sync_effect_overlay()
         self.setFixedSize(self.border.size())
@@ -460,9 +475,11 @@ class MediaPopup(PopupWidget):
             if target is not None:
                 target.setFocus(Qt.FocusReason.PopupFocusReason)
 
-    def showEvent(self, event):
+    def showEvent(self, a0: QShowEvent | None):
+        if a0 is None:
+            return None
         self._fade_animation.setDuration(760)
-        super().showEvent(event)
+        super().showEvent(a0)
         self._fade_animation.setEasingCurve(QEasingCurve.Type.OutQuart)
         animate(self, "pos", self._open_pos, 760, QEasingCurve.Type.OutQuart)
         for effect in self._intro:
@@ -471,7 +488,7 @@ class MediaPopup(PopupWidget):
         if "output" in self.config.popup.detail_order and self._output_service is not None:
             self._output_service.request_refresh()
 
-    def hide_animated(self, restore_focus=False):
+    def hide_animated(self, restore_focus: bool = False):
         self._restore_focus_on_dismiss = self._restore_focus_on_dismiss or bool(restore_focus)
         if self._is_closing or not self.isVisible():
             return
@@ -481,23 +498,29 @@ class MediaPopup(PopupWidget):
         animate(self, "pos", self._closed_pos, 180, QEasingCurve.Type.InCubic)
         super().hide_animated()
 
-    def event(self, event):
-        if event.type() == QEvent.Type.WindowDeactivate and hasattr(self, "selector") and self.selector.menu_active:
+    def event(self, a0: QEvent | None):
+        if a0 is None:
             return False
-        return super().event(event)
+        if a0.type() == QEvent.Type.WindowDeactivate and hasattr(self, "selector") and self.selector.menu_active:
+            return False
+        return super().event(a0)
 
-    def eventFilter(self, obj, event):
+    def eventFilter(self, a0: QObject | None, a1: QEvent | None):
+        if a1 is None:
+            return False
         if self.selector.menu_active:
             return False
-        return super().eventFilter(obj, event)
+        return super().eventFilter(a0, a1)
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
         for effect in self._intro:
             effect.finish()
         self.progress.cancel_interaction()
         self._seek_identity = None
-        super().hideEvent(event)
+        super().hideEvent(a0)
         restore_focus = self._restore_focus_on_dismiss
         self._restore_focus_on_dismiss = False
         self.dismissed.emit(restore_focus)

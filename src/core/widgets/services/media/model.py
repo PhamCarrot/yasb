@@ -1,5 +1,7 @@
 """UI-independent media snapshots. Public timeline values are seconds from track start."""
 
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -93,7 +95,9 @@ class Timeline:
     known: bool = False
 
 
-def normalize_timeline(position, start, end, minimum, maximum, updated_at) -> Timeline:
+def normalize_timeline(
+    position: float, start: float, end: float, minimum: float, maximum: float, updated_at: float | None
+) -> Timeline:
     """Normalize GSMTC's absolute timeline and explicitly represent unknown bounds."""
     values = (position, start, end, minimum, maximum)
     if not all(math.isfinite(value) for value in values):
@@ -236,4 +240,5 @@ def select_active(
     if any(s.session_id == preferred_id for s in usable):
         return preferred_id
     controllable = next((s for s in usable if s.capabilities.can_control), None)
-    return (controllable or (usable[0] if usable else None)).session_id if (controllable or usable) else None
+    fallback = controllable or (usable[0] if usable else None)
+    return fallback.session_id if fallback is not None else None

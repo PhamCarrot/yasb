@@ -1,16 +1,26 @@
 """GSMTC transport. No Qt/UI objects or presentation policy live here."""
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import logging
 import math
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any, cast
 from uuid import uuid4
 
 from winrt.windows.media import MediaPlaybackAutoRepeatMode
+from winrt.windows.media.control import (
+    GlobalSystemMediaTransportControlsSession,
+    GlobalSystemMediaTransportControlsSessionPlaybackControls,
+    GlobalSystemMediaTransportControlsSessionPlaybackInfo,
+    GlobalSystemMediaTransportControlsSessionTimelineProperties,
+)
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as SessionManager
-from winrt.windows.storage.streams import Buffer, InputStreamOptions
+from winrt.windows.storage.streams import Buffer, InputStreamOptions, IRandomAccessStreamReference
 
 from core.widgets.services.media.model import (
     Artwork,
@@ -32,9 +42,9 @@ OPERATION_TIMEOUT = 10
 
 @dataclass
 class _Binding:
-    session: object
+    session: GlobalSystemMediaTransportControlsSession
     player: Player
-    removers: list = field(default_factory=list)
+    removers: list[tuple[Any, str, Any]] = field(default_factory=lambda: list[tuple[Any, str, Any]]())
 
 
 class WindowsMediaSource:
@@ -45,18 +55,18 @@ class WindowsMediaSource:
     Session ids distinguish instances, including simultaneous sessions from one app.
     """
 
-    def __init__(self):
-        self._loop = None
-        self._emit = None
-        self._manager = None
-        self._bindings = {}
-        self._removers = []
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._emit: Callable[[str, str | None, Any], None] | None = None
+        self._manager: SessionManager | None = None
+        self._bindings: dict[str, _Binding] = {}
+        self._removers: list[tuple[Any, str, Any]] = []
         self._lock = threading.RLock()
         self._closed = False
         self._reconcile_queued = False
-        self._sample_versions = {}
+        self._sample_versions: dict[tuple[str, str], int] = {}
 
-    async def start(self, emit):
+    async def start(self, emit: Callable[[str, str | None, Any], None]):
         self._loop = asyncio.get_running_loop()
         self._emit = emit
         manager = await asyncio.wait_for(SessionManager.request_async(), OPERATION_TIMEOUT)
@@ -72,7 +82,7 @@ class WindowsMediaSource:
             self.close()
             raise
 
-    def _post(self, callback, *args):
+    def _post(self, callback: Callable[..., Any], *args: Any):
         if self._closed or self._loop is None:
             return
         try:
@@ -80,30 +90,32 @@ class WindowsMediaSource:
         except RuntimeError:
             logger.debug("Media event ignored during loop shutdown")
 
-    def _deliver(self, kind, session_id, payload):
-        if not self._closed:
+    def _deliver(self, kind: str, session_id: str | None, payload: Any):
+        if not self._closed and self._emit is not None:
             self._emit(kind, session_id, payload)
 
-    def _manager_event(self, _sender, _args):
+    def _manager_event(self, _sender: Any, _args: Any):
         self._post(self._queue_reconcile)
 
     def _queue_reconcile(self):
         if self._closed or self._reconcile_queued:
             return
         self._reconcile_queued = True
-        self._loop.call_soon(self._reconcile)
+        if self._loop is not None:
+            self._loop.call_soon(self._reconcile)
 
     def _reconcile(self):
         self._reconcile_queued = False
         if self._closed:
             return
-        new_bindings = []
+        assert self._manager is not None
+        new_bindings: list[_Binding] = []
         try:
             with self._lock:
                 sessions = list(self._manager.get_sessions())
                 remaining = dict(self._bindings)
-                live = {}
-                added = []
+                live: dict[str, _Binding] = {}
+                added: list[str] = []
                 for session in sessions:
                     # PyWinRT object equality uses native object identity, not AUMID.
                     sid = next((key for key, value in remaining.items() if value.session == session), None)
@@ -149,13 +161,15 @@ class WindowsMediaSource:
             logger.exception("Unable to enumerate media sessions")
             self._deliver("error", None, str(error))
 
-    def _deliver_sample(self, kind, session_id, sample, version):
+    def _deliver_sample(self, kind: str, session_id: str, sample: Playback | Timeline, version: int):
         with self._lock:
             current = self._sample_versions.get((session_id, kind))
         if version == current and session_id in self._bindings:
             self._deliver(kind, session_id, sample)
 
-    def _read_sample(self, kind, session_id, session, *, queued):
+    def _read_sample(
+        self, kind: str, session_id: str, session: GlobalSystemMediaTransportControlsSession, *, queued: bool
+    ):
         error = None
         with self._lock:
             if self._closed or session_id not in self._bindings:
@@ -178,8 +192,8 @@ class WindowsMediaSource:
             else:
                 self._deliver("error", session_id, error)
 
-    def _callback(self, session_id, kind):
-        def callback(sender, _args):
+    def _callback(self, session_id: str, kind: str):
+        def callback(sender: Any, _args: Any):
             if self._closed:
                 return
             if kind == "metadata":
@@ -190,8 +204,8 @@ class WindowsMediaSource:
         return callback
 
     @staticmethod
-    def _playback(session):
-        info = session.get_playback_info()
+    def _playback(session: GlobalSystemMediaTransportControlsSession):
+        info = cast(GlobalSystemMediaTransportControlsSessionPlaybackInfo | None, session.get_playback_info())
         if info is None:
             return Playback()
         status = int(info.playback_status)
@@ -209,7 +223,7 @@ class WindowsMediaSource:
         del raw_rate
         if not math.isfinite(rate):
             rate = 1.0
-        controls = info.controls
+        controls = cast(GlobalSystemMediaTransportControlsSessionPlaybackControls | None, info.controls)
         caps = (
             Capabilities()
             if controls is None
@@ -235,15 +249,17 @@ class WindowsMediaSource:
         return Playback(state, rate, caps, shuffle, repeat)
 
     @staticmethod
-    def _timeline(session):
-        info = session.get_timeline_properties()
+    def _timeline(session: GlobalSystemMediaTransportControlsSession):
+        info = cast(
+            GlobalSystemMediaTransportControlsSessionTimelineProperties | None, session.get_timeline_properties()
+        )
         if info is None:
             return Timeline()
 
-        def seconds(value):
+        def seconds(value: Any):
             return float("nan") if value is None else value.total_seconds()
 
-        def timestamp(value):
+        def timestamp(value: Any):
             return None if value is None else value.timestamp()
 
         sample = normalize_timeline(
@@ -257,14 +273,14 @@ class WindowsMediaSource:
         del info
         return sample
 
-    def refresh(self, session_id):
+    def refresh(self, session_id: str):
         binding = self._bindings.get(session_id)
         if binding is None or self._closed:
             return
         for kind in ("playback", "timeline"):
             self._read_sample(kind, session_id, binding.session, queued=False)
 
-    async def metadata(self, session_id):
+    async def metadata(self, session_id: str):
         binding = self._bindings[session_id]
         with self._lock:
             operation = binding.session.try_get_media_properties_async()
@@ -272,7 +288,7 @@ class WindowsMediaSource:
         if props is None:
             return Metadata()
         with self._lock:
-            fields = dict(
+            fields: dict[str, Any] = dict(
                 title=props.title or "",
                 artist=props.artist or "",
                 album=props.album_title or "",
@@ -282,7 +298,7 @@ class WindowsMediaSource:
                 album_track_count=int(props.album_track_count),
                 genres=tuple(props.genres),
             )
-            thumbnail = props.thumbnail
+            thumbnail = cast(IRandomAccessStreamReference | None, props.thumbnail)
         del props
         art = Artwork()
         art_error = ""
@@ -295,7 +311,7 @@ class WindowsMediaSource:
         return Metadata(**fields, artwork=art, artwork_error=art_error)
 
     @staticmethod
-    async def _artwork(reference):
+    async def _artwork(reference: IRandomAccessStreamReference):
         stream = await reference.open_read_async()
         try:
             size = int(stream.size)
@@ -315,7 +331,7 @@ class WindowsMediaSource:
         finally:
             stream.close()
 
-    async def invoke(self, session_id, action, value=None):
+    async def invoke(self, session_id: str, action: str, value: Any = None):
         methods = {
             "play": ("can_play", "try_play_async"),
             "pause": ("can_pause", "try_pause_async"),
@@ -345,7 +361,7 @@ class WindowsMediaSource:
         return bool(await asyncio.wait_for(operation, OPERATION_TIMEOUT))
 
     @staticmethod
-    def _unsubscribe(removers):
+    def _unsubscribe(removers: list[tuple[Any, str, Any]]):
         for owner, method, token in reversed(removers):
             try:
                 getattr(owner, method)(token)

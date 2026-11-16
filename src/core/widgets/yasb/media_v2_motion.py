@@ -1,27 +1,48 @@
 """Presentation-only motion primitives; no media service or polling timers."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any, cast
+
+import PyQt6.QtCore as QtCore
 from PyQt6.QtCore import (
     QEasingCurve,
     QEvent,
+    QObject,
+    QPauseAnimation,
     QPointF,
     QPropertyAnimation,
     QRectF,
     QSequentialAnimationGroup,
     Qt,
-    pyqtProperty,
 )
-from PyQt6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPalette
-from PyQt6.QtWidgets import QGraphicsEffect, QLabel, QSizePolicy, QStyle, QStyleOption
+from PyQt6.QtGui import (
+    QColor,
+    QHideEvent,
+    QImage,
+    QLinearGradient,
+    QPainter,
+    QPaintEvent,
+    QPalette,
+    QResizeEvent,
+    QShowEvent,
+)
+from PyQt6.QtWidgets import QGraphicsEffect, QLabel, QSizePolicy, QStyle, QStyleOption, QWidget
+
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
 
-def animate(owner, name, target, duration=250, easing=QEasingCurve.Type.OutCubic):
+def animate(
+    owner: QObject, name: str, target: Any, duration: int = 250, easing: QEasingCurve.Type = QEasingCurve.Type.OutCubic
+) -> QPropertyAnimation:
     """Retarget an owned animation from its current presentation value."""
-    if not hasattr(owner, "_motion"):
-        owner._motion = {}
-    animation = owner._motion.get(name)
+    motions = cast(dict[str, QPropertyAnimation], getattr(owner, "_motion", {}))
+    setattr(owner, "_motion", motions)
+    animation = motions.get(name)
     if animation is None:
         animation = QPropertyAnimation(owner, name.encode(), owner)
-        owner._motion[name] = animation
+        motions[name] = animation
     animation.stop()
     animation.setDuration(duration)
     animation.setEasingCurve(easing)
@@ -31,8 +52,9 @@ def animate(owner, name, target, duration=250, easing=QEasingCurve.Type.OutCubic
     return animation
 
 
-def settle(owner):
-    for name, animation in getattr(owner, "_motion", {}).items():
+def settle(owner: QObject) -> None:
+    motions = cast(dict[str, QPropertyAnimation], getattr(owner, "_motion", {}))
+    for name, animation in motions.items():
         animation.stop()
         if animation.endValue() is not None:
             owner.setProperty(name, animation.endValue())
@@ -46,7 +68,15 @@ class RevealEffect(QGraphicsEffect):
     content does not get chopped at each child QWidget boundary.
     """
 
-    def __init__(self, widget, delay=0, duration=760, offset=(0, 0), scale=1.0, back=False):
+    def __init__(
+        self,
+        widget: QWidget,
+        delay: int = 0,
+        duration: int = 760,
+        offset: tuple[float, float] = (0, 0),
+        scale: float = 1.0,
+        back: bool = False,
+    ) -> None:
         super().__init__(widget)
         self._progress = 1.0
         self._offset = QPointF(*offset)
@@ -67,14 +97,14 @@ class RevealEffect(QGraphicsEffect):
         self.sequence.finished.connect(self.finish)
         self.setEnabled(False)
 
-    @pyqtProperty(float)
-    def progress(self):
+    def _get_progress(self):
         return self._progress
 
-    @progress.setter
-    def progress(self, value):
+    def _set_progress(self, value: float):
         self._progress = value
         self.update()
+
+    progress: float = pyqtProperty(float, _get_progress, _set_progress)
 
     def replay(self):
         self.sequence.stop()
@@ -87,12 +117,16 @@ class RevealEffect(QGraphicsEffect):
         self.progress = 1.0
         self.setEnabled(False)
 
-    def boundingRectFor(self, rect):
+    def boundingRectFor(self, sourceRect: QRectF):
         pad = max(16.0, abs(self._offset.x()) + 12.0, abs(self._offset.y()) + 12.0)
-        return rect.adjusted(-pad, -pad, pad, pad)
+        return sourceRect.adjusted(-pad, -pad, pad, pad)
 
-    def draw(self, painter):
+    def draw(self, painter: QPainter | None):
+        if painter is None:
+            return
         pixmap, offset = self.sourcePixmap(Qt.CoordinateSystem.LogicalCoordinates)
+        if offset is None:
+            return
         bounds = QRectF(self.widget.rect())
         painter.save()
         painter.setOpacity(max(0.0, min(1.0, self._progress)))
@@ -110,15 +144,15 @@ class MediaText(QLabel):
 
     def __init__(
         self,
-        name,
-        parent=None,
+        name: str,
+        parent: QWidget | None = None,
         *,
-        elide=False,
-        classes=None,
-        scrollable=None,
-        scroll_speed=40.0,
-        scroll_delay=3000,
-    ):
+        elide: bool = False,
+        classes: str | None = None,
+        scrollable: bool | None = None,
+        scroll_speed: float = 40.0,
+        scroll_delay: int = 3000,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName(name)
         self.setProperty("class", classes or name)
@@ -133,7 +167,8 @@ class MediaText(QLabel):
         self._empty = False
         self._distance = 0.0
         self._scroll = QSequentialAnimationGroup(self)
-        self._pause = self._scroll.addPause(self._scroll_delay)
+        self._pause: QPauseAnimation = cast(QPauseAnimation, self._scroll.addPause(self._scroll_delay))
+        assert self._pause is not None
         self._travel = QPropertyAnimation(self, b"scrollOffset", self._scroll)
         self._travel.setEasingCurve(QEasingCurve.Type.Linear)
         self._scroll.addAnimation(self._travel)
@@ -143,30 +178,30 @@ class MediaText(QLabel):
         self.setMinimumWidth(0)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
-    @pyqtProperty(float)
-    def scrollOffset(self):
+    def _get_scrollOffset(self):
         return self._offset
 
-    @scrollOffset.setter
-    def scrollOffset(self, value):
+    def _set_scrollOffset(self, value: float):
         self._offset = value
         self.update()
 
-    @pyqtProperty(float)
-    def textMix(self):
+    scrollOffset: float = pyqtProperty(float, _get_scrollOffset, _set_scrollOffset)
+
+    def _get_textMix(self):
         return self._mix
 
-    @textMix.setter
-    def textMix(self, value):
+    def _set_textMix(self, value: float):
         self._mix = value
         self.update()
 
-    def setText(self, text):
-        if text == self.text():
+    textMix: float = pyqtProperty(float, _get_textMix, _set_textMix)
+
+    def setText(self, a0: str | None):
+        if a0 == self.text():
             return
         self._previous = self.text()
         self._previous_offset = self._offset
-        super().setText(text)
+        super().setText(a0)
         self.reset_scroll()
         if self._scrollable and self.isVisible():
             self.textMix = 0.0
@@ -174,7 +209,7 @@ class MediaText(QLabel):
         else:
             self.textMix = 1.0
 
-    def reset_scroll(self, empty=None):
+    def reset_scroll(self, empty: bool | None = None):
         if empty is not None:
             self._empty = empty
         self._scroll.stop()
@@ -189,26 +224,34 @@ class MediaText(QLabel):
         self._travel.setDuration(max(1, round(self._distance / self._scroll_speed * 1000)))
         self._scroll.start()
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def showEvent(self, a0: QShowEvent | None):
+        if a0 is None:
+            return None
+        super().showEvent(a0)
         self.reset_scroll()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         self._scroll.stop()
         self.scrollOffset = 0.0
         settle(self)
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def resizeEvent(self, a0: QResizeEvent | None):
+        if a0 is None:
+            return None
+        super().resizeEvent(a0)
         self.reset_scroll()
 
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if hasattr(self, "_scroll") and event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+    def changeEvent(self, a0: QEvent | None):
+        if a0 is None:
+            return None
+        super().changeEvent(a0)
+        if hasattr(self, "_scroll") and a0.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
             self.reset_scroll()
 
-    def display_text(self, width=None):
+    def display_text(self, width: float | None = None):
         """Return the current paint-time text without replacing the full value."""
         text = self.text()
         if not self._scrollable and self.elide:
@@ -216,7 +259,7 @@ class MediaText(QLabel):
             return self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, max(0, round(available)))
         return text
 
-    def _draw_text(self, painter, text, offset, opacity, shift, bounds):
+    def _draw_text(self, painter: QPainter, text: str, offset: float, opacity: float, shift: float, bounds: QRectF):
         if not text or opacity <= 0:
             return
         painter.save()
@@ -235,11 +278,13 @@ class MediaText(QLabel):
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
         painter.restore()
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
         painter = QPainter(self)
         option = QStyleOption()
         option.initFrom(self)
-        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
+        cast(QStyle, self.style()).drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
         bounds = self.contentsRect()
         if bounds.isEmpty():
             return

@@ -1,8 +1,14 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from core.validation.widgets.yasb.media_v2 import MediaV2Config
+
 """Built-in Media V2 QSS using normal YASB class hierarchy and Qt states."""
 
 
-def media_styles(config):
-    s = lambda value: round(value * config.scale)
+def media_styles(config: MediaV2Config):
+    s: Callable[[float], int] = lambda value: round(value * config.scale)
     radius = s(config.border_radius)
     font = config.font_family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
     return f"""

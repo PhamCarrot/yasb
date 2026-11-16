@@ -1,11 +1,16 @@
 """Independent YASB media widget. Configuration type: yasb.media_v2.MediaWidgetV2."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from collections import OrderedDict
+from collections.abc import Callable
+from typing import Any
 
-from PyQt6.QtCore import QBuffer, QByteArray, QEasingCurve, QIODevice, QSize, Qt, QTimer, pyqtProperty, pyqtSlot
-from PyQt6.QtGui import QImage, QImageReader, QPixmap
+import PyQt6.QtCore as QtCore
+from PyQt6.QtCore import QBuffer, QByteArray, QEasingCurve, QIODevice, QSize, Qt, QTimer, pyqtSlot
+from PyQt6.QtGui import QHideEvent, QImage, QImageReader, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import QWIDGETSIZE_MAX, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QVBoxLayout
 
 from core.utils.qobject import is_valid_qobject
@@ -29,10 +34,12 @@ from core.widgets.yasb.media_v2_motion import animate, settle
 from core.widgets.yasb.media_v2_popup import MediaPopup
 from core.widgets.yasb.media_v2_styles import media_styles
 
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
+
 logger = logging.getLogger("MediaV2")
 
 
-def decode_artwork(data, extent):
+def decode_artwork(data: bytes, extent: int):
     """Worker-only QImage decode/resize. QPixmap creation stays on the GUI thread."""
     buffer = QBuffer()
     buffer.setData(QByteArray(data))
@@ -54,22 +61,22 @@ def decode_artwork(data, extent):
 class MediaWidgetV2(BaseWidget):
     validation_schema = MediaV2Config
 
-    def __init__(self, config: MediaV2Config, backend=None):
+    def __init__(self, config: MediaV2Config, backend: MediaBackend | None = None) -> None:
         super().__init__(class_name=f"media-v2-widget {config.class_name}".strip())
         self.config = config
-        self.s = lambda value: round(value * config.scale)
+        self.s: Callable[[float], int] = lambda value: round(value * config.scale)
         self.backend = backend
         self._state = MediaState()
         self._pixmap = QPixmap()
         self._art_key = None
-        self._art_task = None
-        self._art_cache = OrderedDict()
+        self._art_task: asyncio.Task[None] | None = None
+        self._art_cache: OrderedDict[Any, QPixmap] = OrderedDict()
         self._rendered_identity = None
         self._compact = float(config.compact)
         self._compact_target = config.compact
         self._sync_widget_class()
         self._visibility = 0.0 if config.hide_empty else 1.0
-        self._shown = not config.hide_empty
+        self._shown: bool = not config.hide_empty
         self.dialog = None
         identify(self, "media-v2")
         self.setAccessibleName("Media Widget V2")
@@ -155,16 +162,16 @@ class MediaWidgetV2(BaseWidget):
             self._widget_frame.setProperty("class", value)
             refresh_widget_style(self._widget_frame)
 
-    def _wire_controls(self, controls):
+    def _wire_controls(self, controls: TransportControls):
         controls.previous.clicked.connect(lambda: self._action("previous"))
         controls.play.clicked.connect(lambda: self._action("play_pause"))
         controls.next.clicked.connect(lambda: self._action("next"))
 
-    def _action(self, action):
+    def _action(self, action: str):
         if self.backend:
             getattr(self.backend, action)()
 
-    def _select_session(self, sid):
+    def _select_session(self, sid: str | None):
         if self.backend:
             self.backend.select_session(sid)
 
@@ -176,7 +183,7 @@ class MediaWidgetV2(BaseWidget):
             self._popup_input_mode = None
 
     @pyqtSlot(object)
-    def _on_state(self, state):
+    def _on_state(self, state: MediaState):
         old_identity = track_identity(self._state.active)
         self._state = state
         identity = track_identity(state.active)
@@ -196,7 +203,7 @@ class MediaWidgetV2(BaseWidget):
                 animation.finished.connect(self._finish_visibility)
                 self._visibility_connected = True
 
-    def _update_artwork(self, identity):
+    def _update_artwork(self, identity: Any):
         active = self._state.active
         artwork = active.artwork if active else None
         cache_key = (
@@ -232,11 +239,11 @@ class MediaWidgetV2(BaseWidget):
         self.destroyed.connect(cancel)
         task.add_done_callback(lambda done: self._release_task(cancel))
 
-    def _release_task(self, cancel):
+    def _release_task(self, cancel: Callable[[], bool]):
         if is_valid_qobject(self):
             self.destroyed.disconnect(cancel)
 
-    def _remember_art(self, cache_key, pixmap):
+    def _remember_art(self, cache_key: Any, pixmap: QPixmap):
         self._art_cache[cache_key] = pixmap
         self._art_cache.move_to_end(cache_key)
         while len(self._art_cache) > 4:
@@ -260,7 +267,7 @@ class MediaWidgetV2(BaseWidget):
             if not is_valid_qobject(self) or key == self._art_key:
                 return
 
-    async def _load_art(self, key, data, cache_key):
+    async def _load_art(self, key: Any, data: bytes, cache_key: Any):
         try:
             image = await asyncio.to_thread(decode_artwork, data, self.s(448))
             if not is_valid_qobject(self):
@@ -328,26 +335,26 @@ class MediaWidgetV2(BaseWidget):
             self.dialog.session_selected.connect(self._select_session)
             self.dialog.seek_requested.connect(self._seek)
             self.dialog.dismissed.connect(self._popup_dismissed)
-        if self.dialog.isVisible() and not self.dialog._is_closing:
+        if self.dialog.isVisible() and not getattr(self.dialog, "_is_closing", False):
             self.dialog.hide_animated(restore_focus=input_mode == "keyboard")
         else:
             self.dialog.set_state(self._state, self._pixmap)
             self.dialog.open_at_parent(focus_first=input_mode == "keyboard")
             self.info.setAccessibleDescription("Expanded media player")
 
-    def _popup_dismissed(self, restore_focus):
+    def _popup_dismissed(self, restore_focus: bool):
         self.info.setAccessibleDescription("Collapsed media player")
         if restore_focus and self.isVisible() and self.info.isEnabled():
             self.info.setFocus(Qt.FocusReason.PopupFocusReason)
 
-    def _seek(self, seconds, identity):
+    def _seek(self, seconds: float, identity: Any):
         if self.backend and identity == track_identity(self.backend.state.active):
             self.backend.seek(seconds)
         elif self.dialog:
             self.dialog.progress.reject_seek()
 
     @pyqtSlot(str, str, bool)
-    def _action_finished(self, sid, action, accepted):
+    def _action_finished(self, sid: str | None, action: str, accepted: bool):
         if sid != self._state.active_session_id:
             return
         if not accepted:
@@ -356,37 +363,39 @@ class MediaWidgetV2(BaseWidget):
                 self.dialog.progress.reject_seek()
                 self.dialog.set_state(self._state, self._pixmap)
 
-    def wheelEvent(self, event):
-        if self.backend and event.angleDelta().y():
-            self.backend.switch_session(1 if event.angleDelta().y() > 0 else -1)
-            event.accept()
+    def wheelEvent(self, a0: QWheelEvent | None):
+        if a0 is None:
+            return None
+        if self.backend and a0.angleDelta().y():
+            self.backend.switch_session(1 if a0.angleDelta().y() > 0 else -1)
+            a0.accept()
         else:
-            event.ignore()
+            a0.ignore()
 
     def toggle_compact(self):
         self._compact_target = not self._compact_target
         self._sync_widget_class()
         animate(self, "compactAmount", float(self._compact_target), 600, QEasingCurve.Type.OutQuint)
 
-    @pyqtProperty(float)
-    def compactAmount(self):
+    def _get_compactAmount(self):
         return self._compact
 
-    @compactAmount.setter
-    def compactAmount(self, value):
+    def _set_compactAmount(self, value: float):
         self._compact = value
         self._layout_metrics()
 
-    @pyqtProperty(float)
-    def reveal(self):
+    compactAmount: float = pyqtProperty(float, _get_compactAmount, _set_compactAmount)
+
+    def _get_reveal(self):
         return self._visibility
 
-    @reveal.setter
-    def reveal(self, value):
+    def _set_reveal(self, value: float):
         self._visibility = value
         self._opacity.setEnabled(value < 1.0)
         self._opacity.setOpacity(value)
         self.setFixedWidth(round(self.bar_surface.width() * value))
+
+    reveal: float = pyqtProperty(float, _get_reveal, _set_reveal)
 
     def _finish_visibility(self):
         if not self._shown:
@@ -431,8 +440,10 @@ class MediaWidgetV2(BaseWidget):
         # The stylesheet owns rounded geometry; integer masks create jagged edges.
         self.bar_surface.clearMask()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
         if self.dialog:
             self.dialog.hide_animated()
-        super().hideEvent(event)
+        super().hideEvent(a0)

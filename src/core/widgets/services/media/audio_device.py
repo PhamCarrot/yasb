@@ -7,23 +7,13 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import Any
 
-try:
-    import comtypes
-    from pycaw.callbacks import MMNotificationClient
-    from pycaw.constants import DEVICE_STATE
-    from pycaw.pycaw import AudioUtilities, EDataFlow, ERole
-
-    _WINDOWS_AUDIO_AVAILABLE = True
-except ImportError:
-    comtypes = None
-    AudioUtilities = EDataFlow = ERole = DEVICE_STATE = None
-    _WINDOWS_AUDIO_AVAILABLE = False
-
-    class MMNotificationClient:
-        pass
-
-
+import comtypes  # pyright: ignore[reportMissingTypeStubs]
+from pycaw.api.mmdeviceapi import IMMDeviceEnumerator
+from pycaw.callbacks import MMNotificationClient
+from pycaw.constants import DEVICE_STATE
+from pycaw.pycaw import AudioUtilities, EDataFlow, ERole
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
@@ -53,11 +43,13 @@ class _DefaultRenderWatcher(MMNotificationClient):
         super().__init__()
         self._service = service
 
-    def on_default_device_changed(self, flow, flow_id, role, role_id, default_device_id) -> None:
+    def on_default_device_changed(
+        self, flow: str, flow_id: int, role: str, role_id: int, default_device_id: str | None
+    ) -> None:
         if flow_id == EDataFlow.eRender.value and role_id == ERole.eMultimedia.value:
             self._service.request_refresh(force=True)
 
-    def on_device_state_changed(self, device_id, new_state, new_state_id) -> None:
+    def on_device_state_changed(self, device_id: str, new_state: str, new_state_id: int) -> None:
         state = self._service.state
         if device_id != state.endpoint_id:
             return
@@ -87,8 +79,8 @@ class DefaultAudioOutputService(QObject):
         self._closed = False
         self._query_running = False
         self._pending_force = False
-        self._enumerator = None
-        self._watcher = None
+        self._enumerator: IMMDeviceEnumerator | None = None
+        self._watcher: _DefaultRenderWatcher | None = None
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yasb-audio-output")
         self._refresh_requested.connect(self._schedule_refresh)
         self._query_finished.connect(self._accept_query)
@@ -133,8 +125,6 @@ class DefaultAudioOutputService(QObject):
 
     @staticmethod
     def _query_state() -> AudioOutputState:
-        if not _WINDOWS_AUDIO_AVAILABLE:
-            return AudioOutputState()
         comtypes.CoInitialize()
         try:
             enumerator = AudioUtilities.GetDeviceEnumerator()
@@ -151,7 +141,7 @@ class DefaultAudioOutputService(QObject):
         finally:
             comtypes.CoUninitialize()
 
-    def _query_done(self, generation, future, force: bool) -> None:
+    def _query_done(self, generation: int, future: Any, force: bool) -> None:
         try:
             state = future.result()
         except Exception:
@@ -186,8 +176,6 @@ class DefaultAudioOutputService(QObject):
             self._start_query(True)
 
     def _register_watcher(self) -> None:
-        if not _WINDOWS_AUDIO_AVAILABLE:
-            return
         try:
             self._enumerator = AudioUtilities.GetDeviceEnumerator()
             self._watcher = _DefaultRenderWatcher(self)

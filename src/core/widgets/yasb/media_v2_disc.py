@@ -1,16 +1,21 @@
 """MediaPopup's 25-second disc and 60 radial bars, using the existing shared FFT."""
 
+from __future__ import annotations
+
 import math
 import time
+from collections.abc import Sequence
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen, QRadialGradient
+from PyQt6.QtGui import QColor, QHideEvent, QPainter, QPaintEvent, QPen, QPixmap, QRadialGradient, QShowEvent
+from PyQt6.QtWidgets import QWidget
 
+from core.validation.widgets.yasb.media_v2 import MediaDiscConfig
 from core.widgets.services.audio_visualizer.spectrum import FFT_SIZE, SpectrumAnalyzer
 from core.widgets.yasb.media_v2_components import AlbumArt
 
 
-def rhythm_targets(bass, kick, strength=1.0, size=224.0):
+def rhythm_targets(bass: float, kick: float, strength: float = 1.0, size: float = 224.0):
     """Return smoothed-motion targets for the disc's scale, bounce and tilt."""
     strength = max(0.0, float(strength))
     bass = max(0.0, min(1.0, float(bass)))
@@ -24,16 +29,19 @@ def rhythm_targets(bass, kick, strength=1.0, size=224.0):
     return scale, bounce, tilt
 
 
-def reactive_levels(source, count=60):
+def reactive_levels(source: Sequence[float] | None, count: int = 60):
     if not source:
         return [0.0] * count, 0.0, 0.0
-    sample = lambda i: source[i] if i < len(source) else 0.0
+
+    def sample(i: int) -> float:
+        return source[i] if i < len(source) else 0.0
+
     sub = sample(0) * 0.50 + sample(1) * 0.35 + sample(2) * 0.15
     punch = sample(1) * 0.30 + sample(2) * 0.45 + sample(3) * 0.25
     raw = max(sub, punch)
     kick = min(1.0, ((raw - 0.10) / 0.90) ** 1.8 * 1.4) if raw > 0.10 else 0.0
     bass = max(0.0, min(1.0, sub * 0.6 + punch * 0.4))
-    levels = []
+    levels: list[float] = []
     for i in range(count):
         pos = (i / max(1, count - 1)) ** 1.15 * (len(source) - 1)
         low = int(pos)
@@ -43,7 +51,7 @@ def reactive_levels(source, count=60):
 
 
 class _CaptureLease:
-    def __init__(self, fps):
+    def __init__(self, fps: int) -> None:
         self.service = None
         self.fps = fps
         self.channels = frozenset({"average"})
@@ -60,7 +68,7 @@ class _CaptureLease:
         self.attached = True
 
     def detach(self):
-        if self.attached:
+        if self.attached and self.service is not None:
             self.service.detach(self.fps, self.channels, True)
             self.attached = False
 
@@ -71,16 +79,17 @@ class DiscArt(AlbumArt):
     MAX_BOUNCE_LOGICAL = 2.0
     EDGE_INSET_LOGICAL = 0.75
 
-    def __init__(self, options, parent=None):
+    def __init__(self, options: MediaDiscConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent, vinyl=True)
         self.options = options
         self._levels = [0.0] * 60
-        self._bass = self._kick = 0.0
-        self._rhythm_offset_y = 0.0
-        self._rhythm_tilt = 0.0
+        self._bass: float = 0.0
+        self._kick: float = 0.0
+        self._rhythm_offset_y: float = 0.0
+        self._rhythm_tilt: float = 0.0
         self._last_tick = 0.0
         self._decay_started = 0.0
-        self._decay_snapshot = None
+        self._decay_snapshot: tuple[tuple[float, ...], float, float, float, float, float] | None = None
         self._sample_rate = None
         self._analyzer = SpectrumAnalyzer(
             bands=24,
@@ -98,7 +107,7 @@ class DiscArt(AlbumArt):
         self._clock.setInterval(round(1000 / options.framerate))
         self._clock.timeout.connect(self._tick)
 
-    def set_artwork(self, pixmap, playing=False, *, clear_previous=False):
+    def set_artwork(self, pixmap: QPixmap, playing: bool = False, *, clear_previous: bool = False):
         was_playing = self._playing
         super().set_artwork(pixmap, playing, clear_previous=clear_previous)
         self._sync_clock(was_playing=was_playing)
@@ -126,7 +135,7 @@ class DiscArt(AlbumArt):
         if not self._clock.isActive():
             self._clock.start()
 
-    def _sync_clock(self, *, was_playing=False):
+    def _sync_clock(self, *, was_playing: bool = False):
         active = self.isVisible() and self._playing
         capture_effect = self.options.visualizer or self.options.rhythm or self.options.glow
         if active and capture_effect:
@@ -147,15 +156,19 @@ class DiscArt(AlbumArt):
             self._clock.stop()
             self._reset_reactive_state()
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def showEvent(self, a0: QShowEvent | None):
+        if a0 is None:
+            return None
+        super().showEvent(a0)
         self._sync_clock()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         self._clock.stop()
         self._lease.detach()
         self._reset_reactive_state()
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
     def _logical_scale(self):
         return max(0.01, min(self.contentsRect().width(), self.contentsRect().height()) / 224.0)
@@ -182,7 +195,7 @@ class DiscArt(AlbumArt):
         max_rhythm_scale = max(1.0, safe_radius / base_radius) if base_radius else 1.0
         return available, bar_height, bounce, pen_width, max_rhythm_scale
 
-    def _tick_decay(self, now):
+    def _tick_decay(self, now: float):
         if self._decay_snapshot is None:
             self._clock.stop()
             return
@@ -212,6 +225,7 @@ class DiscArt(AlbumArt):
             self._angle = (self._angle + dt * 360 / 25) % 360
         if self._lease.attached:
             service = self._lease.service
+            assert service is not None
             if self._sample_rate != service.sample_rate:
                 self._sample_rate = service.sample_rate
                 self._analyzer.set_sample_rate(self._sample_rate)
@@ -235,7 +249,9 @@ class DiscArt(AlbumArt):
         self._rhythm_tilt += (tilt_target - self._rhythm_tilt) * (1 - math.exp(-dt * 14))
         self.update()
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         center = self._effect_center()
@@ -285,4 +301,4 @@ class DiscArt(AlbumArt):
                 painter.rotate(6)
             painter.restore()
         painter.end()
-        super().paintEvent(event)
+        super().paintEvent(a0)

@@ -1,10 +1,30 @@
 """MediaPopup's charging, rotating border, repainting only the narrow border region."""
 
-import time
+from __future__ import annotations
 
-from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, pyqtProperty
-from PyQt6.QtGui import QBrush, QColor, QConicalGradient, QPainter, QPainterPath, QPen, QRegion
-from PyQt6.QtWidgets import QFrame
+import time
+from collections.abc import Callable
+from typing import Any
+
+import PyQt6.QtCore as QtCore
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QConicalGradient,
+    QHideEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPen,
+    QRegion,
+    QShowEvent,
+)
+from PyQt6.QtWidgets import QFrame, QWidget
+
+from core.validation.widgets.yasb.media_v2 import MediaBorderConfig
+
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
 
 def lower_left_clockwise_path(rect: QRectF, radius: float) -> QPainterPath:
@@ -25,7 +45,9 @@ def lower_left_clockwise_path(rect: QRectF, radius: float) -> QPainterPath:
 
 
 class MediaBorder(QFrame):
-    def __init__(self, radius, scale=1.0, parent=None, options=None):
+    def __init__(
+        self, radius: float, scale: float = 1.0, parent: QWidget | None = None, options: MediaBorderConfig | None = None
+    ) -> None:
         super().__init__(parent)
         self.radius = radius
         self.scale = scale
@@ -47,24 +69,29 @@ class MediaBorder(QFrame):
         self._timer.setInterval(max(8, round(1000 / max(1, self.framerate))))
         self._timer.timeout.connect(self._tick)
 
-    @pyqtProperty(bool)
-    def artworkColors(self):
+    def _get_artworkColors(self):
         return self._artwork_colors
 
-    @artworkColors.setter
-    def artworkColors(self, value):
+    def _set_artworkColors(self, value: bool):
         self._artwork_colors = value
+
+    artworkColors: bool = pyqtProperty(bool, _get_artworkColors, _set_artworkColors)
 
     def _blended_colors(self):
         amount = QEasingCurve(QEasingCurve.Type.InOutQuad).valueForProgress(
             min(1.0, max(0.0, (time.monotonic() - self._palette_started) / 0.8))
         )
         return [
-            QColor.fromRgbF(*(a * (1 - amount) + b * amount for a, b in zip(old.getRgbF(), new.getRgbF())))
+            QColor.fromRgbF(
+                *(
+                    float(a or 0.0) * (1 - amount) + float(b or 0.0) * amount
+                    for a, b in zip(old.getRgbF(), new.getRgbF())
+                )
+            )
             for old, new in zip(self._from_colors, self._colors)
         ]
 
-    def set_palette(self, colors):
+    def set_palette(self, colors: list[str]):
         if not self._artwork_colors or len(colors) < 3:
             return
         self._from_colors = self._blended_colors()
@@ -72,12 +99,10 @@ class MediaBorder(QFrame):
         self._palette_started = time.monotonic()
         self._tick()
 
-    @pyqtProperty(bool)
-    def animated(self):
+    def _get_animated(self):
         return self._animated
 
-    @animated.setter
-    def animated(self, value):
+    def _set_animated(self, value: bool):
         self._animated = value
         if value and self.isVisible():
             self._timer.start()
@@ -85,47 +110,55 @@ class MediaBorder(QFrame):
             self._timer.stop()
         self.update()
 
-    @pyqtProperty(QColor)
-    def firstColor(self):
+    animated: bool = pyqtProperty(bool, _get_animated, _set_animated)
+
+    def _get_firstColor(self):
         return self._colors[0]
 
-    @firstColor.setter
-    def firstColor(self, value):
+    def _set_firstColor(self, value: QColor):
         self._colors[0] = QColor(value)
 
-    @pyqtProperty(QColor)
-    def secondColor(self):
+    firstColor: QColor = pyqtProperty(QColor, _get_firstColor, _set_firstColor)
+
+    def _get_secondColor(self):
         return self._colors[1]
 
-    @secondColor.setter
-    def secondColor(self, value):
+    def _set_secondColor(self, value: QColor):
         self._colors[1] = QColor(value)
 
-    @pyqtProperty(QColor)
-    def thirdColor(self):
+    secondColor: QColor = pyqtProperty(QColor, _get_secondColor, _set_secondColor)
+
+    def _get_thirdColor(self):
         return self._colors[2]
 
-    @thirdColor.setter
-    def thirdColor(self, value):
+    def _set_thirdColor(self, value: QColor):
         self._colors[2] = QColor(value)
+
+    thirdColor: QColor = pyqtProperty(QColor, _get_thirdColor, _set_thirdColor)
 
     def _tick(self):
         inset = max(4, round(5 * self.scale))
         self.update(QRegion(self.rect()) - QRegion(self.rect().adjusted(inset, inset, -inset, -inset)))
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def showEvent(self, a0: QShowEvent | None):
+        if a0 is None:
+            return None
+        super().showEvent(a0)
         self._started = time.monotonic()
         if self._animated:
             self._timer.start()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         self._timer.stop()
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
         if not self._animated:
-            super().paintEvent(event)
+            super().paintEvent(a0)
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

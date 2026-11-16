@@ -9,8 +9,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from typing import Any
+
+from PyQt6.QtCore import QObject
+
+from core.widgets.services.media.audio_device import DefaultAudioOutputService
 
 try:
     import winreg
@@ -20,10 +26,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from core.widgets.services.media.audio_device import AudioOutputState, DefaultAudioOutputService
+from core.widgets.services.media.audio_device import AudioOutputState
 
 logger = logging.getLogger("EqualizerAPO")
 
@@ -99,7 +105,7 @@ _KNOWN_PROCESSING_RE = re.compile(
 )
 
 
-def discover_equalizer_apo_details(registry=winreg) -> tuple[EqualizerApoInstallation | None, str]:
+def discover_equalizer_apo_details(registry: Any = winreg) -> tuple[EqualizerApoInstallation | None, str]:
     """Return installation plus a stable discovery status for UI diagnostics."""
     if registry is None:
         return None, "not_installed"
@@ -129,12 +135,12 @@ def discover_equalizer_apo_details(registry=winreg) -> tuple[EqualizerApoInstall
     ), "ready"
 
 
-def discover_equalizer_apo(registry=winreg) -> EqualizerApoInstallation | None:
+def discover_equalizer_apo(registry: Any = winreg) -> EqualizerApoInstallation | None:
     """Discover Equalizer APO from HKLM without assuming Program Files."""
     return discover_equalizer_apo_details(registry)[0]
 
 
-def validate_gains(gains) -> tuple[float, ...]:
+def validate_gains(gains: Sequence[float]) -> tuple[float, ...]:
     values = tuple(float(value) for value in gains)
     if len(values) != len(FREQUENCIES):
         raise ValueError("Equalizer APO requires exactly 10 gains")
@@ -143,7 +149,7 @@ def validate_gains(gains) -> tuple[float, ...]:
     return values
 
 
-def automatic_preamp(gains) -> float:
+def automatic_preamp(gains: Sequence[float]) -> float:
     values = validate_gains(gains)
     return -max(0.0, max(values))
 
@@ -162,14 +168,14 @@ def build_device_selector(endpoint_guid: str) -> str:
     return f"Device: {guid}"
 
 
-def build_graphic_eq(gains) -> str:
+def build_graphic_eq(gains: Sequence[float]) -> str:
     values = validate_gains(gains)
     pairs = "; ".join(f"{frequency} {_format_db(gain)}" for frequency, gain in zip(FREQUENCIES, values))
     return f"GraphicEQ: {pairs}"
 
 
 def render_managed_config(
-    gains,
+    gains: Sequence[float],
     endpoint_guid: str,
     *,
     auto_preamp: bool = True,
@@ -269,7 +275,7 @@ def analyze_existing_config(config_text: str) -> ExistingConfigAnalysis:
     if not active:
         return ExistingConfigAnalysis(ExistingConfigKind.EMPTY, False, reason="No active Equalizer APO commands.")
 
-    include_names = []
+    include_names: list[str] = []
     for _index, line in active:
         match = _INCLUDE_LINE_RE.fullmatch(line)
         if match:
@@ -430,7 +436,7 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
 class EqualizerApoConfigManager:
     """Registry discovery and the small slice of Equalizer APO config YASB owns."""
 
-    def __init__(self, registry=winreg) -> None:
+    def __init__(self, registry: Any = winreg) -> None:
         self._registry = registry
         self._installation_checked = False
         self._installation: EqualizerApoInstallation | None = None
@@ -569,7 +575,9 @@ class EqualizerApoConfigManager:
             )
         return None
 
-    def apply(self, gains, output: AudioOutputState, apo_options, *, enabled: bool = True) -> ApoApplyResult:
+    def apply(
+        self, gains: Sequence[float], output: AudioOutputState, apo_options: Any, *, enabled: bool = True
+    ) -> ApoApplyResult:
         setup = self._prepare_parent(bool(apo_options.manage_include))
         if setup is not None:
             return setup
@@ -653,7 +661,14 @@ class EqualizerApoController(QObject):
     status_changed = pyqtSignal(str, str)
     _job_finished = pyqtSignal(object, object)
 
-    def __init__(self, options, parent=None, *, output_service=None, manager=None) -> None:
+    def __init__(
+        self,
+        options: Any,
+        parent: QObject | None = None,
+        *,
+        output_service: DefaultAudioOutputService | None = None,
+        manager: Any = None,
+    ) -> None:
         super().__init__(parent)
         self.options = options
         self.apo_options = getattr(
@@ -714,17 +729,17 @@ class EqualizerApoController(QObject):
     def write_failed(self) -> bool:
         return self._write_failed
 
-    def start(self, gains) -> None:
+    def start(self, gains: Sequence[float]) -> None:
         self.apply_preset(gains)
 
-    def apply_preset(self, gains) -> None:
+    def apply_preset(self, gains: Sequence[float]) -> None:
         self._editing_gains = validate_gains(gains)
         self._timer.stop()
         self._write_failed = False
         if self.enabled:
             self._queue_write(self._editing_gains)
 
-    def update_custom(self, gains, *, final: bool = False) -> None:
+    def update_custom(self, gains: Sequence[float], *, final: bool = False) -> None:
         self._editing_gains = validate_gains(gains)
         if not self.enabled:
             return
@@ -746,7 +761,7 @@ class EqualizerApoController(QObject):
         # curve, so a default-output change retargets that exact state.
         self._queue_write(self._editing_gains)
 
-    def _queue_write(self, gains) -> None:
+    def _queue_write(self, gains: Sequence[float]) -> None:
         if self._closed:
             return
         values = validate_gains(gains)
@@ -764,7 +779,7 @@ class EqualizerApoController(QObject):
         future = self._executor.submit(self._manager.apply, request.gains, request.output, self.apo_options)
         future.add_done_callback(lambda result, request=request: self._finish_worker(request, result))
 
-    def _finish_worker(self, request: ApoWriteRequest, future) -> None:
+    def _finish_worker(self, request: ApoWriteRequest, future: Any) -> None:
         try:
             result = future.result()
         except Exception as error:

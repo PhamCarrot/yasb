@@ -4,17 +4,21 @@ This adapter owns no Windows session, timer, selection policy or media logic.
 The mutable SessionState shape and Pillow decoding exist only for old consumers.
 """
 
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
+import threading
+from typing import Any
 
+import PyQt6.sip as sip
 from PIL import Image
 from PyQt6.QtCore import QObject, pyqtSignal
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSession
 
-from core.utils.singleton import QSingleton
 from core.widgets.services.media.backend import MediaBackend
-from core.widgets.services.media.model import PlaybackState
+from core.widgets.services.media.model import MediaSessionState, MediaState, PlaybackState
 
 # Retain the legacy import used in widget annotations.
 type MediaSession = GlobalSystemMediaTransportControlsSession
@@ -23,7 +27,7 @@ logger = logging.getLogger("WindowsMedia")
 
 
 class SessionState:
-    def __init__(self, snapshot, is_current, thumbnail):
+    def __init__(self, snapshot: MediaSessionState, is_current: bool, thumbnail: Image.Image | None) -> None:
         self.session_id = snapshot.session_id
         self.app_id = snapshot.player.app_id
         self.title = snapshot.title
@@ -57,6 +61,19 @@ class SessionState:
         self.thumbnail = thumbnail
 
 
+class QSingleton(type(QObject)):
+    """Singleton metaclass for Qt classes"""
+
+    _instances: dict[Any, Any] = {}
+    _lock = threading.Lock()
+
+    def __call__(cls, *args: Any, **kwargs: Any):
+        with cls._lock:
+            if cls not in cls._instances or sip.isdeleted(cls._instances[cls]):
+                cls._instances[cls] = super().__call__(*args, **kwargs)
+            return cls._instances[cls]
+
+
 class WindowsMedia(QObject, metaclass=QSingleton):
     media_data_changed = pyqtSignal(dict)
     current_session_changed = pyqtSignal()
@@ -64,26 +81,26 @@ class WindowsMedia(QObject, metaclass=QSingleton):
     timeline_info_changed = pyqtSignal()
     playback_info_changed = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.backend = MediaBackend.shared()
-        self._trackers = {}
-        self._art = {}
-        self._last_state = None
+        self._trackers: dict[str, SessionState] = {}
+        self._art: dict[str, tuple[str, Image.Image | None]] = {}
+        self._last_state: MediaState | None = None
         self.backend.state_changed.connect(self._on_state)
         # Defer initial publication until the constructing widget connects its slots.
         asyncio.get_running_loop().call_soon(self.force_update)
 
     @property
-    def current_session(self):
-        return self._trackers.get(self.backend.state.active_session_id)
+    def current_session(self) -> SessionState | None:
+        return self._trackers.get(self.backend.state.active_session_id or "")
 
-    def _on_state(self, state, force=False):
+    def _on_state(self, state: MediaState, force: bool = False):
         old = self._last_state
         self._last_state = state
         live = {s.session_id for s in state.sessions}
         self._art = {sid: cached for sid, cached in self._art.items() if sid in live}
-        trackers = {}
+        trackers: dict[str, SessionState] = {}
         for snapshot in state.sessions:
             art = snapshot.artwork
             cached = self._art.get(snapshot.session_id)
@@ -117,7 +134,7 @@ class WindowsMedia(QObject, metaclass=QSingleton):
     def force_update(self):
         self._on_state(self.backend.state, force=True)
 
-    def switch_current_session(self, direction):
+    def switch_current_session(self, direction: int):
         return self.backend.switch_session(direction)
 
     def play_pause(self):
@@ -136,9 +153,9 @@ class WindowsMedia(QObject, metaclass=QSingleton):
     def cycle_repeat(self):
         active = self.backend.state.active
         current = active.playback.repeat if active else 0
-        return self.backend.set_repeat({0: 2, 2: 1, 1: 0}.get(current, 0))
+        return self.backend.set_repeat(0 if current is None else {0: 2, 2: 1, 1: 0}.get(current, 0))
 
-    async def seek_to_position(self, position):
+    async def seek_to_position(self, position: float):
         return await self.backend.seek(position)
 
     def _on_quit(self):

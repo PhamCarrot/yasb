@@ -1,9 +1,25 @@
 """Visual equalizer controls with optional Equalizer APO controller delegation."""
 
-import math
+from __future__ import annotations
 
-from PyQt6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, Qt, pyqtProperty
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPalette, QPen
+import math
+from collections.abc import Callable
+from typing import Any, cast
+
+import PyQt6.QtCore as QtCore
+from PyQt6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, Qt
+from PyQt6.QtGui import (
+    QColor,
+    QHideEvent,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPalette,
+    QPen,
+    QResizeEvent,
+    QShowEvent,
+)
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -13,12 +29,16 @@ from PyQt6.QtWidgets import (
     QStyle,
     QStyleOptionSlider,
     QVBoxLayout,
+    QWidget,
 )
 
 from core.utils.tooltip import set_tooltip
+from core.validation.widgets.yasb.media_v2 import MediaEqualizerConfig
 from core.widgets.services.media.equalizer_apo import EqualizerApoController
 from core.widgets.yasb.media_v2_components import MediaButton, identify
 from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
+
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
 PRESETS = {
     "Flat": (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
@@ -38,13 +58,13 @@ PRESET_EFFECT_DURATIONS = {
 }
 
 
-def lightning_state(milliseconds):
+def lightning_state(milliseconds: float):
     progress = 10 * QEasingCurve(QEasingCurve.Type.OutSine).valueForProgress(min(1.0, milliseconds / 650))
     fade = QEasingCurve(QEasingCurve.Type.OutQuad).valueForProgress(max(0.0, min(1.0, (milliseconds - 800) / 800)))
     return progress, fade
 
 
-def band_effect_state(milliseconds, index):
+def band_effect_state(milliseconds: float, index: int):
     """Return the per-band hit, sweep, ring and flash state."""
     progress, fade = lightning_state(milliseconds)
     distance = progress - index
@@ -61,7 +81,7 @@ def band_effect_state(milliseconds, index):
     return hit, track, ring, flash, fade
 
 
-def preset_band_state(mode, phase, index, count=10):
+def preset_band_state(mode: str, phase: float, index: int, count: int = 10):
     """Return clipped-highlight progress, opacity and overshoot for one band."""
     if mode == "ripple":
         order = index
@@ -89,31 +109,31 @@ class GainSlider(QSlider):
 
     SCALE = 100
 
-    def __init__(self, parent):
+    def __init__(self, parent: QWidget | None) -> None:
         super().__init__(Qt.Orientation.Vertical, parent)
-        self._gain = 0.0
+        self.gain_value = 0.0
         self.programmatic = False
         self._effect_phase = 1600.0
         self._effect_index = 0
-        self._effect_mode = "none"
+        self.effect_mode = "none"
         self._effect_accent = QColor("#cba6f7")
         self.setRange(-12 * self.SCALE, 12 * self.SCALE)
         self.setSingleStep(self.SCALE)
         self.setPageStep(self.SCALE)
         self.sliderReleased.connect(self.snap_to_step)
 
-    @pyqtProperty(float)
-    def gain(self):
-        return self._gain
+    def _get_gain(self):
+        return self.gain_value
 
-    @gain.setter
-    def gain(self, value):
-        self._gain = max(-12.0, min(12.0, float(value)))
+    def _set_gain(self, value: float):
+        self.gain_value = max(-12.0, min(12.0, float(value)))
         self.programmatic = True
-        super().setValue(round(self._gain * self.SCALE))
+        super().setValue(round(self.gain_value * self.SCALE))
         self.programmatic = False
 
-    def gain_from_slider(self, value=None):
+    gain: float = pyqtProperty(float, _get_gain, _set_gain)
+
+    def gain_from_slider(self, value: float | None = None):
         raw = super().value() if value is None else value
         return raw / self.SCALE
 
@@ -121,16 +141,16 @@ class GainSlider(QSlider):
         if self.programmatic:
             return
         snapped = float(round(self.gain_from_slider()))
-        self._gain = snapped
+        self.gain_value = snapped
         self.programmatic = True
         super().setValue(round(snapped * self.SCALE))
         self.programmatic = False
 
-    def set_effect(self, phase, index, accent, mode=None):
+    def set_effect(self, phase: float, index: int, accent: QColor, mode: str | None = None):
         self._effect_phase = phase
         self._effect_index = index
         if mode is not None:
-            self._effect_mode = mode
+            self.effect_mode = mode
         self._effect_accent = QColor(accent)
         self.update()
 
@@ -138,10 +158,10 @@ class GainSlider(QSlider):
         """Return the same rounded, style-derived fill path used by internal effects."""
         option = QStyleOptionSlider()
         self.initStyleOption(option)
-        groove = self.style().subControlRect(
+        groove = cast(QStyle, self.style()).subControlRect(
             QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderGroove, self
         )
-        handle = self.style().subControlRect(
+        handle = cast(QStyle, self.style()).subControlRect(
             QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
         )
         fill = QRectF(groove)
@@ -151,17 +171,19 @@ class GainSlider(QSlider):
         path.addRoundedRect(fill, radius, radius)
         return fill, path
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def paintEvent(self, ev: QPaintEvent | None):
+        if ev is None:
+            return None
+        super().paintEvent(ev)
         if self._effect_phase >= 1600:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if self._effect_mode in ("ripple", "center_pulse"):
+        if self.effect_mode in ("ripple", "center_pulse"):
             self._paint_preset_highlight(painter)
             return
-        if self._effect_mode != "lightning":
+        if self.effect_mode != "lightning":
             return
 
         _, track, _, flash, fade = band_effect_state(self._effect_phase, self._effect_index)
@@ -208,8 +230,8 @@ class GainSlider(QSlider):
             painter.fillRect(stripe, gradient)
             painter.restore()
 
-    def _paint_preset_highlight(self, painter):
-        progress, opacity, overshoot = preset_band_state(self._effect_mode, self._effect_phase, self._effect_index)
+    def _paint_preset_highlight(self, painter: QPainter):
+        progress, opacity, overshoot = preset_band_state(self.effect_mode, self._effect_phase, self._effect_index)
         if opacity <= 0:
             return
         fill, fill_path = self.effect_fill_path()
@@ -241,9 +263,11 @@ class GainSlider(QSlider):
             painter.fillPath(fill_path, wash)
         painter.restore()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
 
 class EqualizerEffectOverlay(QFrame):
@@ -255,23 +279,25 @@ class EqualizerEffectOverlay(QFrame):
     blurs, keeping the animation cheap enough for normal popup use.
     """
 
-    def __init__(self, bands, parent):
+    def __init__(self, bands: EqualizerBands, parent: QWidget | None) -> None:
         super().__init__(parent)
         self.bands = bands
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def _map_slider_point(self, slider, point):
+    def _map_slider_point(self, slider: GainSlider, point: QPoint):
         """Map a slider-local point onto this sibling overlay safely."""
         return QPointF(self.mapFromGlobal(slider.mapToGlobal(point)))
 
-    def _points(self):
-        points = []
+    def _points(self) -> list[QPointF]:
+        points: list[QPointF] = []
         for slider in self.bands.sliders:
             point = self._map_slider_point(slider, QPoint(slider.width() // 2, 0))
             y = (
@@ -282,13 +308,15 @@ class EqualizerEffectOverlay(QFrame):
             points.append(QPointF(point.x(), y))
         return points
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if self.bands._effect_mode != "lightning":
+        if self.bands.effect_mode != "lightning":
             return
-        progress, fade = lightning_state(self.bands._phase)
+        progress, fade = lightning_state(self.bands.phase)
         if progress <= 0 or fade >= 1 or len(self.bands.sliders) < 2:
             return
         points = self._points()
@@ -302,7 +330,7 @@ class EqualizerEffectOverlay(QFrame):
         # without running a Gaussian blur over the popup every frame.
         for index, slider in enumerate(self.bands.sliders):
             point = self._map_slider_point(slider, QPoint(slider.width() // 2, 0))
-            _, _, ring, _, _ = band_effect_state(self.bands._phase, index)
+            _, _, ring, _, _ = band_effect_state(self.bands.phase, index)
             if ring <= 0:
                 continue
             base = QRectF(
@@ -320,8 +348,8 @@ class EqualizerEffectOverlay(QFrame):
                 painter.setPen(QPen(color, width * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
                 painter.drawRoundedRect(rect, rect.width() / 2, min(rect.width(), rect.height()) / 2)
 
-        seconds = self.bands._phase / 1000
-        paths = []
+        seconds = self.bands.phase / 1000
+        paths: list[QPainterPath] = []
         for layer in range(4):
             path = QPainterPath(points[0])
             for i in range(9):
@@ -374,14 +402,14 @@ class EqualizerEffectOverlay(QFrame):
 
 
 class EqualizerBands(QFrame):
-    def __init__(self, scale, parent):
+    def __init__(self, scale: float, parent: QWidget | None) -> None:
         super().__init__(parent)
         identify(self, "media-equalizer", "equalizer")
         self.scale = scale
-        self.sliders = []
-        self._phase = 1600.0
-        self._effect_mode = "none"
-        self.effect_overlay = None
+        self.sliders: list[GainSlider] = []
+        self.phase = 1600.0
+        self.effect_mode = "none"
+        self.effect_overlay: EqualizerEffectOverlay | None = None
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.WindowText, QColor("#cba6f7"))
         self.setPalette(palette)
@@ -395,7 +423,7 @@ class EqualizerBands(QFrame):
             slider = identify(GainSlider(self), "media-eq-" + frequency, "eq-band", "band-" + frequency)
             slider.setAccessibleName(f"{frequency} Hz equalizer gain")
             slider.setFixedWidth(round(32 * scale))
-            slider.set_effect(self._phase, index, self.accentColor, self._effect_mode)
+            slider.set_effect(self.phase, index, self.accentColor, self.effect_mode)
             column.addWidget(slider, 1, Qt.AlignmentFlag.AlignHCenter)
             label = QLabel(frequency, self)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -403,42 +431,42 @@ class EqualizerBands(QFrame):
             layout.addLayout(column, 1)
             self.sliders.append(slider)
 
-    @pyqtProperty(QColor)
-    def accentColor(self):
+    def _get_accentColor(self):
         return self.palette().color(QPalette.ColorRole.WindowText)
 
-    @accentColor.setter
-    def accentColor(self, value):
+    def _set_accentColor(self, value: QColor):
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.WindowText, QColor(value))
         self.setPalette(palette)
         for index, slider in enumerate(self.sliders):
-            slider.set_effect(self._phase, index, self.accentColor, self._effect_mode)
+            slider.set_effect(self.phase, index, self.accentColor, self.effect_mode)
         if self.effect_overlay is not None:
             self.effect_overlay.update()
         self.update()
 
-    @pyqtProperty(float)
-    def lightningPhase(self):
-        return self._phase
+    accentColor: QColor = pyqtProperty(QColor, _get_accentColor, _set_accentColor)
 
-    @lightningPhase.setter
-    def lightningPhase(self, value):
-        self._phase = value
+    def _get_lightningPhase(self):
+        return self.phase
+
+    def _set_lightningPhase(self, value: float):
+        self.phase = value
         for index, slider in enumerate(self.sliders):
-            slider.set_effect(value, index, self.accentColor, self._effect_mode)
+            slider.set_effect(value, index, self.accentColor, self.effect_mode)
         if self.effect_overlay is not None:
             self.effect_overlay.update()
         self.update()
 
-    def set_effect_mode(self, effect):
-        self._effect_mode = effect
+    lightningPhase: float = pyqtProperty(float, _get_lightningPhase, _set_lightningPhase)
+
+    def set_effect_mode(self, effect: str):
+        self.effect_mode = effect
         for index, slider in enumerate(self.sliders):
-            slider.set_effect(self._phase, index, self.accentColor, effect)
+            slider.set_effect(self.phase, index, self.accentColor, effect)
         if self.effect_overlay is not None:
             self.effect_overlay.update()
 
-    def trigger(self, effect="lightning", speed=1.0):
+    def trigger(self, effect: str = "lightning", speed: float = 1.0):
         animation = getattr(self, "_motion", {}).get("lightningPhase")
         if animation:
             animation.stop()
@@ -450,28 +478,42 @@ class EqualizerBands(QFrame):
             return
         animate(self, "lightningPhase", 1600.0, max(1, round(duration * speed)), QEasingCurve.Type.Linear)
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
         # Slider chrome remains in this bounded row; sweep/ring energy is drawn
         # by EqualizerEffectOverlay across the full section so it cannot be
         # clipped by the 155px slider container.
-        super().paintEvent(event)
+        if a0 is None:
+            return None
+        super().paintEvent(a0)
 
 
 class EqualizerPanel(QFrame):
-    def __init__(self, options, scale, parent=None, *, effect_parent=None):
+    def __init__(
+        self,
+        options: MediaEqualizerConfig,
+        scale: float,
+        parent: QWidget | None = None,
+        *,
+        effect_parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         identify(self, "media-equalizer-section", "equalizer-section")
         self.options = options
         self.preset = options.preset
         self.effect_mode = getattr(options, "preset_effect", "lightning")
         self.effect_speed = float(getattr(options, "effect_speed", 1.0))
-        self.buttons = {}
+        self.buttons: dict[str, MediaButton] = {}
         self.apo = EqualizerApoController(options, self)
-        s = lambda n: round(n * scale)
+
+        def s(n: float) -> int:
+            return round(n * scale)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(s(12))
@@ -512,7 +554,11 @@ class EqualizerPanel(QFrame):
                 button.setFixedHeight(s(28))
                 button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
                 set_tooltip(button, f"Apply {name} equalizer preset")
-                button.clicked.connect(lambda checked=False, name=name: self.select_preset(name))
+
+                def select(checked: bool = False, name: str = name) -> None:
+                    self.select_preset(name)
+
+                button.clicked.connect(select)
                 self.buttons[name] = button
                 row.addWidget(button, 1)
             rows.addLayout(row)
@@ -521,10 +567,15 @@ class EqualizerPanel(QFrame):
         self.apo.status_changed.connect(self._on_apo_status)
         self.destroyed.connect(lambda *_: self.apo.shutdown())
         for slider in self.bands.sliders:
-            slider.valueChanged.connect(
-                lambda value, slider=slider: self._custom(slider, slider.gain_from_slider(value))
-            )
-            slider.sliderPressed.connect(lambda slider=slider: self._interrupt(slider))
+
+            def change(value: int, slider: GainSlider = slider) -> None:
+                self._custom(slider, slider.gain_from_slider(value))
+
+            def interrupt(slider: GainSlider = slider) -> None:
+                self._interrupt(slider)
+
+            slider.valueChanged.connect(change)
+            slider.sliderPressed.connect(interrupt)
             slider.sliderReleased.connect(self._release_custom)
         self.select_preset(self.preset, motion=False)
         self.intro = [
@@ -542,11 +593,11 @@ class EqualizerPanel(QFrame):
         self.effects.show()
         self.effects.raise_()
 
-    def _duration(self, milliseconds):
+    def _duration(self, milliseconds: float):
         # effect_speed is a duration multiplier: <1 faster, >1 slower.
         return max(1, round(milliseconds * self.effect_speed))
 
-    def select_preset(self, name, motion=True):
+    def select_preset(self, name: str, motion: bool = True):
         values = self.options.custom_bands if name == "Custom" else PRESETS[name]
         self.preset = name
         self.apo.apply_preset(values)
@@ -562,16 +613,16 @@ class EqualizerPanel(QFrame):
             if self.effect_mode != "none":
                 self.bands.trigger(self.effect_mode, self.effect_speed)
 
-    def _interrupt(self, slider):
+    def _interrupt(self, slider: GainSlider):
         animation = getattr(slider, "_motion", {}).get("gain")
         if animation:
             animation.stop()
 
-    def _custom(self, slider, value):
+    def _custom(self, slider: GainSlider, value: float):
         if slider.programmatic:
             return
         self._interrupt(slider)
-        slider._gain = float(value)
+        slider.gain_value = float(value)
         set_tooltip(slider, f"Gain: {round(value):+d} dB")
         if self.preset != "Custom":
             self.preset = "Custom"
@@ -585,7 +636,7 @@ class EqualizerPanel(QFrame):
     def _current_gains(self):
         return tuple(slider.gain_from_slider() for slider in self.bands.sliders)
 
-    def _on_apo_status(self, status, detail):
+    def _on_apo_status(self, status: str, detail: str):
         self.status.setText(status)
         if detail:
             set_tooltip(self.status, detail)
@@ -597,15 +648,21 @@ class EqualizerPanel(QFrame):
         for name, button in self.buttons.items():
             button.setChecked(name == self.preset)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def resizeEvent(self, a0: QResizeEvent | None):
+        if a0 is None:
+            return None
+        super().resizeEvent(a0)
         if hasattr(self, "effects"):
             self.sync_effect_overlay()
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def showEvent(self, a0: QShowEvent | None):
+        if a0 is None:
+            return None
+        super().showEvent(a0)
         self.sync_effect_overlay()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         self.effects.hide()
-        super().hideEvent(event)
+        super().hideEvent(a0)

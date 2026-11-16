@@ -1,8 +1,13 @@
 """Presentation-only Qt components used by Media Widget V2."""
 
+from __future__ import annotations
+
 import math
 import time
+from collections.abc import Callable
+from typing import Any, cast
 
+import PyQt6.QtCore as QtCore
 from PyQt6.QtCore import (
     QEasingCurve,
     QEvent,
@@ -13,10 +18,24 @@ from PyQt6.QtCore import (
     QSize,
     Qt,
     QTimer,
-    pyqtProperty,
     pyqtSignal,
 )
-from PyQt6.QtGui import QColor, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from PyQt6.QtGui import (
+    QColor,
+    QEnterEvent,
+    QGuiApplication,
+    QHideEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPalette,
+    QPen,
+    QPixmap,
+    QResizeEvent,
+    QWheelEvent,
+)
 from PyQt6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -27,12 +46,15 @@ from PyQt6.QtWidgets import (
     QSlider,
     QStyle,
     QStyleOption,
+    QWidget,
 )
 
 from core.utils.tooltip import set_tooltip
 from core.utils.utilities import refresh_widget_style
-from core.widgets.services.media.model import MAX_TIMELINE_DURATION
+from core.widgets.services.media.model import MAX_TIMELINE_DURATION, MediaSessionState
 from core.widgets.yasb.media_v2_motion import MediaText, animate, settle
+
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
 __all__ = [
     "AlbumArt",
@@ -49,7 +71,7 @@ __all__ = [
 ]
 
 
-def identify(widget, name, *classes):
+def identify[T: QWidget](widget: T, name: str, *classes: str) -> T:
     """Assign a stable compatibility ID plus optional reusable semantic classes."""
     widget.setObjectName(name)
     if classes:
@@ -57,21 +79,21 @@ def identify(widget, name, *classes):
     return widget
 
 
-def format_time(seconds):
+def format_time(seconds: float | None):
     if seconds is None or not math.isfinite(seconds) or seconds > MAX_TIMELINE_DURATION:
         return "--:--"
     minutes, seconds = divmod(max(0, int(seconds)), 60)
     return f"{minutes:02d}:{seconds:02d}"
 
 
-def track_identity(active):
+def track_identity(active: MediaSessionState | None):
     if active is None:
         return None
     meta = active.metadata
     return (active.session_id, meta.title.strip(), meta.track_number or None)
 
 
-def media_title(active):
+def media_title(active: MediaSessionState | None):
     if active is None:
         return "Nothing playing"
     if active.title:
@@ -84,7 +106,7 @@ def media_title(active):
 class MediaButton(QPushButton):
     """YASB-style semantic button; Qt owns normal interaction pseudo-states."""
 
-    def __init__(self, parent=None, *classes):
+    def __init__(self, parent: QWidget | None = None, *classes: str) -> None:
         super().__init__(parent)
         self.setFlat(True)
         self.setAutoDefault(False)
@@ -95,7 +117,7 @@ class MediaButton(QPushButton):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.set_base_classes(*classes)
 
-    def set_base_classes(self, *classes):
+    def set_base_classes(self, *classes: str):
         value = " ".join(dict.fromkeys(("btn", *(item for item in classes if item))))
         if self.property("class") != value:
             self.setProperty("class", value)
@@ -105,15 +127,17 @@ class MediaButton(QPushButton):
 class MediaComboBox(QComboBox):
     """Hidden selector model backed by a reliably anchored player menu."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._mode = "automatic"
         self._anchor = None
         self._menu_active = False
         self._sync_class()
-        self.view().setProperty("class", "menu media-player-menu")
-        self.view().setFrameShape(QFrame.Shape.NoFrame)
+        view = self.view()
+        assert view is not None
+        view.setProperty("class", "menu media-player-menu")
+        view.setFrameShape(QFrame.Shape.NoFrame)
         self.popup_menu = QMenu(self)
         self.popup_menu.setObjectName("media-player-menu")
         self.popup_menu.setProperty("class", "menu media-player-menu")
@@ -126,7 +150,7 @@ class MediaComboBox(QComboBox):
     def menu_active(self):
         return self._menu_active
 
-    def set_mode(self, mode):
+    def set_mode(self, mode: str):
         mode = "pinned" if mode == "pinned" else "automatic"
         if mode != self._mode:
             self._mode = mode
@@ -153,7 +177,7 @@ class MediaComboBox(QComboBox):
     def hidePopup(self):
         self.popup_menu.close()
 
-    def open_at(self, anchor):
+    def open_at(self, anchor: QWidget):
         """Open the menu at a visible sibling while retaining combo selection state."""
         self._anchor = anchor
         self.showPopup()
@@ -168,12 +192,19 @@ class MediaComboBox(QComboBox):
         current = self.currentIndex()
         for index in range(self.count()):
             action = self.popup_menu.addAction(self.itemText(index))
+            assert action is not None
             action.setCheckable(True)
             action.setChecked(index == current)
-            action.setEnabled(bool(self.model().flags(self.model().index(index, 0)) & Qt.ItemFlag.ItemIsEnabled))
-            action.triggered.connect(lambda checked=False, item=index: self._activate(item))
+            model = self.model()
+            assert model is not None
+            action.setEnabled(bool(model.flags(model.index(index, 0)) & Qt.ItemFlag.ItemIsEnabled))
 
-    def _activate(self, index):
+            def activate(checked: bool = False, item: int = index) -> None:
+                self._activate(item)
+
+            action.triggered.connect(activate)
+
+    def _activate(self, index: int):
         if not 0 <= index < self.count():
             return
         self.setCurrentIndex(index)
@@ -221,7 +252,7 @@ class MediaComboBox(QComboBox):
 class InfoButton(MediaButton):
     """Accessible click target around the bar artwork/title/time column."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent, "media-info")
         self.setObjectName("media-info")
         self._highlight = 0.0
@@ -238,50 +269,62 @@ class InfoButton(MediaButton):
         self._activation_mode = "keyboard"
         return mode
 
-    def mousePressEvent(self, event: QMouseEvent):
-        if event.button() == Qt.MouseButton.LeftButton:
+    def mousePressEvent(self, e: QMouseEvent | None):
+        if e is None:
+            return None
+        if e.button() == Qt.MouseButton.LeftButton:
             self._activation_mode = "mouse"
-        super().mousePressEvent(event)
+        super().mousePressEvent(e)
 
-    def keyPressEvent(self, event: QKeyEvent):
-        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+    def keyPressEvent(self, a0: QKeyEvent | None):
+        if a0 is None:
+            return None
+        if a0.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._activation_mode = "keyboard"
-        super().keyPressEvent(event)
+        super().keyPressEvent(a0)
 
-    @pyqtProperty(bool)
-    def highlightEnabled(self):
+    def _get_highlightEnabled(self):
         return self._highlight_enabled
 
-    @highlightEnabled.setter
-    def highlightEnabled(self, value):
+    def _set_highlightEnabled(self, value: bool):
         self._highlight_enabled = value
         self.update()
 
-    @pyqtProperty(float)
-    def highlight(self):
+    highlightEnabled: bool = pyqtProperty(bool, _get_highlightEnabled, _set_highlightEnabled)
+
+    def _get_highlight(self):
         return self._highlight
 
-    @highlight.setter
-    def highlight(self, value):
+    def _set_highlight(self, value: float):
         self._highlight = value
         if self._highlight_enabled:
             self.update()
 
-    def enterEvent(self, event):
+    highlight: float = pyqtProperty(float, _get_highlight, _set_highlight)
+
+    def enterEvent(self, event: QEnterEvent | None):
+        if event is None:
+            return None
         animate(self, "highlight", 0.06, 250, QEasingCurve.Type.OutExpo)
         super().enterEvent(event)
 
-    def leaveEvent(self, event):
+    def leaveEvent(self, a0: QEvent | None):
+        if a0 is None:
+            return None
         animate(self, "highlight", 0.0, 250, QEasingCurve.Type.OutExpo)
-        super().leaveEvent(event)
+        super().leaveEvent(a0)
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
         self.highlight = 0.0
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
+        super().paintEvent(a0)
         if not self._highlight_enabled:
             return
         painter = QPainter(self)
@@ -296,7 +339,7 @@ class InfoButton(MediaButton):
 class AlbumArt(QFrame):
     """Rounded/circular artwork with cached-pixmap replacement and playback motion."""
 
-    def __init__(self, parent=None, *, vinyl=False, radius=10):
+    def __init__(self, parent: QWidget | None = None, *, vinyl: bool = False, radius: float = 10) -> None:
         super().__init__(parent)
         identify(self, "media-art", "media-art", "artwork")
         self.vinyl = vinyl
@@ -321,49 +364,49 @@ class AlbumArt(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setAccessibleName("Album artwork")
 
-    @pyqtProperty(QColor)
-    def fallbackColor(self):
+    def _get_fallbackColor(self):
         return self.palette().color(QPalette.ColorRole.Window)
 
-    @fallbackColor.setter
-    def fallbackColor(self, value):
+    def _set_fallbackColor(self, value: QColor):
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.Window, QColor(value))
         self.setPalette(palette)
         self.update()
 
-    @pyqtProperty(QColor)
-    def accentColor(self):
+    fallbackColor: QColor = pyqtProperty(QColor, _get_fallbackColor, _set_fallbackColor)
+
+    def _get_accentColor(self):
         return self.palette().color(QPalette.ColorRole.WindowText)
 
-    @accentColor.setter
-    def accentColor(self, color):
+    def _set_accentColor(self, color: QColor):
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.WindowText, QColor(color))
         self.setPalette(palette)
         self.update()
 
-    @pyqtProperty(float)
-    def artMix(self):
+    accentColor: QColor = pyqtProperty(QColor, _get_accentColor, _set_accentColor)
+
+    def _get_artMix(self):
         return self._mix
 
-    @artMix.setter
-    def artMix(self, value):
+    def _set_artMix(self, value: float):
         self._mix = value
         if value >= 1:
             self._old_pixmap = QPixmap()
         self.update()
 
-    @pyqtProperty(float)
-    def discScale(self):
+    artMix: float = pyqtProperty(float, _get_artMix, _set_artMix)
+
+    def _get_discScale(self):
         return self._disc_scale
 
-    @discScale.setter
-    def discScale(self, value):
+    def _set_discScale(self, value: float):
         self._disc_scale = value
         self.update()
 
-    def set_artwork(self, pixmap, playing=False, *, clear_previous=False):
+    discScale: float = pyqtProperty(float, _get_discScale, _set_discScale)
+
+    def set_artwork(self, pixmap: QPixmap, playing: bool = False, *, clear_previous: bool = False):
         if clear_previous:
             animation = getattr(self, "_motion", {}).get("artMix")
             if animation is not None:
@@ -392,11 +435,13 @@ class AlbumArt(QFrame):
                 self.discScale = target
         self.update()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def _draw_cover(self, painter, bounds, path, pixmap, opacity):
+    def _draw_cover(self, painter: QPainter, bounds: QRectF, path: Any, pixmap: QPixmap, opacity: float):
         painter.save()
         painter.setOpacity(opacity)
         painter.fillPath(path, self.fallbackColor)
@@ -421,7 +466,9 @@ class AlbumArt(QFrame):
             painter.drawText(bounds, Qt.AlignmentFlag.AlignCenter, "♫")
         painter.restore()
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -472,9 +519,9 @@ class AlbumArt(QFrame):
 class TransportButton(MediaButton):
     """Native keyboard/mouse semantics, animated vector icons and click feedback."""
 
-    def __init__(self, action, size, icon_size, parent=None):
+    def __init__(self, action: str, size: int, icon_size: float, parent: QWidget | None = None) -> None:
         super().__init__(parent, "transport", action)
-        self.action = action
+        self.action: str = action
         self.icon_size = icon_size
         self._visual_scale = 1.0
         self._availability = 1.0
@@ -489,7 +536,7 @@ class TransportButton(MediaButton):
         self.released.connect(self._released)
         self.clicked.connect(self._clicked)
 
-    def set_shape(self, shape, radius=10):
+    def set_shape(self, shape: str, radius: float = 10):
         self._shape = shape
         self._shape_radius = radius
         self._sync_shape()
@@ -521,48 +568,50 @@ class TransportButton(MediaButton):
         self.setProperty("shape", shape)
         self.set_base_classes("transport", self.action, shape)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def resizeEvent(self, a0: QResizeEvent | None):
+        if a0 is None:
+            return None
+        super().resizeEvent(a0)
         self._sync_shape()
 
-    def hitButton(self, point):
-        return self._shape_path().contains(QPointF(point))
+    def hitButton(self, pos: QPoint):
+        return self._shape_path().contains(QPointF(pos))
 
-    @pyqtProperty(float)
-    def visualScale(self):
+    def _get_visualScale(self):
         return self._visual_scale
 
-    @visualScale.setter
-    def visualScale(self, value):
+    def _set_visualScale(self, value: float):
         self._visual_scale = value
         self.update()
 
-    @pyqtProperty(float)
-    def availability(self):
+    visualScale: float = pyqtProperty(float, _get_visualScale, _set_visualScale)
+
+    def _get_availability(self):
         return self._availability
 
-    @availability.setter
-    def availability(self, value):
+    def _set_availability(self, value: float):
         self._availability = value
         self.update()
 
-    @pyqtProperty(float)
-    def morph(self):
+    availability: float = pyqtProperty(float, _get_availability, _set_availability)
+
+    def _get_morph(self):
         return self._morph
 
-    @morph.setter
-    def morph(self, value):
+    def _set_morph(self, value: float):
         self._morph = value
         self.update()
 
-    @pyqtProperty(float)
-    def flash(self):
+    morph: float = pyqtProperty(float, _get_morph, _set_morph)
+
+    def _get_flash(self):
         return self._flash
 
-    @flash.setter
-    def flash(self, value):
+    def _set_flash(self, value: float):
         self._flash = value
         self.update()
+
+    flash: float = pyqtProperty(float, _get_flash, _set_flash)
 
     def _pressed(self):
         animate(self, "visualScale", 1.08, 250, QEasingCurve.Type.OutQuint)
@@ -576,18 +625,24 @@ class TransportButton(MediaButton):
         self.visualScale = 1.1
         self._released()
 
-    def enterEvent(self, event):
+    def enterEvent(self, event: QEnterEvent | None):
+        if event is None:
+            return None
         if self.isEnabled():
             animate(self, "visualScale", 1.04, 250, QEasingCurve.Type.OutQuint)
         super().enterEvent(event)
 
-    def leaveEvent(self, event):
+    def leaveEvent(self, a0: QEvent | None):
+        if a0 is None:
+            return None
         animate(self, "visualScale", 1.0, 250, QEasingCurve.Type.OutQuint)
-        super().leaveEvent(event)
+        super().leaveEvent(a0)
 
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.EnabledChange and hasattr(self, "_availability"):
+    def changeEvent(self, e: QEvent | None):
+        if e is None:
+            return None
+        super().changeEvent(e)
+        if e.type() == QEvent.Type.EnabledChange and hasattr(self, "_availability"):
             target = 1.0 if self.isEnabled() else 0.5
             self.setCursor(Qt.CursorShape.PointingHandCursor if self.isEnabled() else Qt.CursorShape.ArrowCursor)
             if self.isVisible():
@@ -598,13 +653,15 @@ class TransportButton(MediaButton):
                 self.setDown(False)
                 self._released()
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         settle(self)
         self.visualScale = 1.0
         self.flash = 0.0
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def set_playing(self, playing):
+    def set_playing(self, playing: bool):
         action = "pause" if playing else "play"
         if action == self.action:
             return
@@ -617,8 +674,10 @@ class TransportButton(MediaButton):
         else:
             self.morph = float(playing)
 
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
+        super().paintEvent(a0)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._flash:
@@ -654,13 +713,24 @@ class TransportButton(MediaButton):
 
 
 class TransportControls(QFrame):
-    def __init__(self, scale, parent=None, *, popup=False, compact=False, control_size=None):
+    def __init__(
+        self,
+        scale: float,
+        parent: QWidget | None = None,
+        *,
+        popup: bool = False,
+        compact: float = False,
+        control_size: float | None = None,
+    ) -> None:
         super().__init__(parent)
         identify(self, "media-controls", "media-controls")
         self._scale = float(scale)
         self._popup = popup
         self._control_size = float(control_size if control_size is not None else (43 if popup else 30))
-        s = lambda value: round(value * self._scale)
+
+        def s(value: float) -> int:
+            return round(value * self._scale)
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(s(18 if popup else (3 if compact else 4)))
@@ -673,7 +743,7 @@ class TransportControls(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.set_metrics(scale=self._scale, compact=compact)
 
-    def set_metrics(self, *, scale=None, compact=False):
+    def set_metrics(self, *, scale: float | None = None, compact: float = False):
         """Apply one coherent metric set to geometry, icons, hit targets and spacing."""
         scale = self._scale if scale is None else float(scale)
         compact = max(0.0, min(1.0, float(compact)))
@@ -694,9 +764,9 @@ class TransportControls(QFrame):
             button.setFixedSize(size, size)
             button.icon_size = icon
             button.update()
-        self.layout().setSpacing(round(spacing * scale))
+        cast(QHBoxLayout, self.layout()).setSpacing(round(spacing * scale))
 
-    def set_state(self, active):
+    def set_state(self, active: MediaSessionState | None):
         caps = active.capabilities if active else None
         self.previous.setEnabled(bool(caps and caps.can_previous))
         self.play.setEnabled(bool(caps and caps.can_play_pause))
@@ -709,7 +779,9 @@ class SeekSlider(QSlider):
     preview_changed = pyqtSignal(float)
     seek_requested = pyqtSignal(float)
 
-    def __init__(self, scale, parent=None, *, smoothing_ms=250, show_handle=True):
+    def __init__(
+        self, scale: float, parent: QWidget | None = None, *, smoothing_ms: int = 250, show_handle: bool = True
+    ) -> None:
         super().__init__(Qt.Orientation.Horizontal, parent)
         identify(self, "media-progress", "media-progress")
         self._scale = float(scale)
@@ -745,7 +817,7 @@ class SeekSlider(QSlider):
         self.valueChanged.connect(self.update)
         self.rangeChanged.connect(lambda *_: self.update())
 
-    def _visual_rects(self, progress=None):
+    def _visual_rects(self, progress: float | None = None):
         handle = self.handle_size
         track_h = max(4, round(6 * self._scale))
         usable = max(1, self.width() - handle)
@@ -763,7 +835,7 @@ class SeekSlider(QSlider):
         )
 
     @staticmethod
-    def _paint_styled_frame(painter, frame, target):
+    def _paint_styled_frame(painter: QPainter, frame: QFrame, target: Any):
         if target.width() <= 0 or target.height() <= 0:
             return
         size = QSize(max(1, math.ceil(target.width())), max(1, math.ceil(target.height())))
@@ -775,17 +847,21 @@ class SeekSlider(QSlider):
         painter.save()
         painter.translate(target.topLeft())
         painter.setClipRect(QRectF(0, 0, target.width(), target.height()))
-        frame.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, frame)
+        cast(QStyle, frame.style()).drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, frame)
         painter.restore()
 
-    def _sync_visuals(self, *_):
+    def _sync_visuals(self, *_: Any):
         self.update()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
+    def resizeEvent(self, a0: QResizeEvent | None):
+        if a0 is None:
+            return None
+        super().resizeEvent(a0)
         self._sync_visuals()
 
-    def paintEvent(self, event):
+    def paintEvent(self, ev: QPaintEvent | None):
+        if ev is None:
+            return None
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         track, fill, handle = self._visual_rects()
@@ -798,18 +874,18 @@ class SeekSlider(QSlider):
     def interacting(self):
         return self._dragging
 
-    @pyqtProperty(float)
-    def visualProgress(self):
+    def _get_visualProgress(self):
         return self._visual_progress
 
-    @visualProgress.setter
-    def visualProgress(self, value):
+    def _set_visualProgress(self, value: float):
         value = max(0.0, min(1.0, float(value)))
         self._visual_progress = value
         self.setValue(round(value * self.maximum()))
         self.update()
 
-    def set_progress(self, progress, reset=False, velocity=0.0):
+    visualProgress: float = pyqtProperty(float, _get_visualProgress, _set_visualProgress)
+
+    def set_progress(self, progress: float | None, reset: bool = False, velocity: float = 0.0):
         target = min(1.0, max(0.0, progress or 0.0))
         self._last_progress = target
         if self._dragging:
@@ -847,7 +923,7 @@ class SeekSlider(QSlider):
         self.cancel_interaction()
         self.interaction_started.emit()
 
-    def _commit(self, value):
+    def _commit(self, value: float):
         self._pending = value
         self._deadline = time.monotonic() + 1.0
         self._seek_timeout.start()
@@ -862,52 +938,62 @@ class SeekSlider(QSlider):
     def _expire_pending(self):
         self.reject_seek()
 
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.EnabledChange and not self.isEnabled() and hasattr(self, "_seek_timeout"):
+    def changeEvent(self, e: QEvent | None):
+        if e is None:
+            return None
+        super().changeEvent(e)
+        if e.type() == QEvent.Type.EnabledChange and not self.isEnabled() and hasattr(self, "_seek_timeout"):
             self.cancel_interaction()
-        if event.type() == QEvent.Type.EnabledChange and hasattr(self, "_track"):
+        if e.type() == QEvent.Type.EnabledChange and hasattr(self, "_track"):
             for visual in (self._track, self._fill, self._handle):
                 visual.setEnabled(self.isEnabled())
             self.update()
 
-    def _point(self, event):
+    def _point(self, event: QMouseEvent):
         value = (event.position().x() - self.handle_size / 2) / max(1, self.width() - self.handle_size)
         self.setSliderPosition(round(max(0.0, min(1.0, value)) * self.maximum()))
         self._visual_progress = self.sliderPosition() / self.maximum()
         self.update()
         self.preview_changed.emit(self.sliderPosition() / self.maximum())
 
-    def mousePressEvent(self, event):
-        if event.button() != Qt.MouseButton.LeftButton or not self.isEnabled():
-            event.ignore()
+    def mousePressEvent(self, ev: QMouseEvent | None):
+        if ev is None:
+            return None
+        if ev.button() != Qt.MouseButton.LeftButton or not self.isEnabled():
+            ev.ignore()
             return
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         self._begin()
         self._dragging = True
         self.setSliderDown(True)
-        self._point(event)
-        event.accept()
+        self._point(ev)
+        ev.accept()
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, ev: QMouseEvent | None):
+        if ev is None:
+            return None
         if self._dragging:
-            self._point(event)
-            event.accept()
+            self._point(ev)
+            ev.accept()
         else:
-            super().mouseMoveEvent(event)
+            super().mouseMoveEvent(ev)
 
-    def mouseReleaseEvent(self, event):
-        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
-            self._point(event)
+    def mouseReleaseEvent(self, ev: QMouseEvent | None):
+        if ev is None:
+            return None
+        if self._dragging and ev.button() == Qt.MouseButton.LeftButton:
+            self._point(ev)
             value = self.sliderPosition() / self.maximum()
             self.setValue(self.sliderPosition())
             self.cancel_interaction()
             self._commit(value)
-            event.accept()
+            ev.accept()
         else:
-            event.ignore()
+            ev.ignore()
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, ev: QKeyEvent | None):
+        if ev is None:
+            return None
         keys = (
             Qt.Key.Key_Left,
             Qt.Key.Key_Right,
@@ -918,33 +1004,37 @@ class SeekSlider(QSlider):
             Qt.Key.Key_PageUp,
             Qt.Key.Key_PageDown,
         )
-        if event.key() not in keys or not self.isEnabled():
-            super().keyPressEvent(event)
+        if ev.key() not in keys or not self.isEnabled():
+            super().keyPressEvent(ev)
             return
         self._begin()
-        super().keyPressEvent(event)
+        super().keyPressEvent(ev)
         self._visual_progress = self.value() / self.maximum()
         self.update()
         self.preview_changed.emit(self.value() / self.maximum())
         self._commit(self.value() / self.maximum())
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, e: QWheelEvent | None):
+        if e is None:
+            return None
         if not self.isEnabled():
-            event.ignore()
+            e.ignore()
             return
         self._begin()
-        super().wheelEvent(event)
+        super().wheelEvent(e)
         self._visual_progress = self.value() / self.maximum()
         self.update()
         self.preview_changed.emit(self.value() / self.maximum())
         self._commit(self.value() / self.maximum())
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         self.cancel_interaction()
         for animation in getattr(self, "_motion", {}).values():
             animation.stop()
         self.visualProgress = self._last_progress
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
     def sizeHint(self):
         return QSize(200, self.handle_size)

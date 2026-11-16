@@ -1,11 +1,14 @@
 """Event-driven media state and actions; use shared() on YASB's qasync thread."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import math
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, replace
-from typing import Protocol
+from typing import Any, ClassVar, Protocol
 
 from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal
 
@@ -43,9 +46,9 @@ def _same_track(old: Metadata, new: Metadata) -> bool:
 class MediaSource(Protocol):
     """Sources deliver sessions/metadata/playback/timeline/error events on the owning loop."""
 
-    async def start(self, emit): ...
+    async def start(self, emit: Callable[[str, str | None, Any], None]): ...
     async def metadata(self, session_id: str) -> Metadata: ...
-    async def invoke(self, session_id: str, action: str, value=None) -> bool: ...
+    async def invoke(self, session_id: str, action: str, value: Any = None) -> bool: ...
     def refresh(self, session_id: str): ...
     def close(self): ...
 
@@ -55,8 +58,8 @@ class _Record:
     state: MediaSessionState
     anchor: float = 0.0
     revision: int = 0
-    timeline_sample: tuple | None = None
-    metadata_task: asyncio.Task | None = None
+    timeline_sample: tuple[float, float, float | None, bool] | None = None
+    metadata_task: asyncio.Task[None] | None = None
 
 
 class MediaBackend(QObject):
@@ -75,10 +78,10 @@ class MediaBackend(QObject):
     position_changed = pyqtSignal(object)  # active MediaSessionState | None
     error_occurred = pyqtSignal(str, str)  # session id (or empty), message
     action_finished = pyqtSignal(str, str, bool)  # captured session id, action, accepted
-    _shared = None
+    _shared: ClassVar[MediaBackend | None] = None
 
     @classmethod
-    def shared(cls):
+    def shared(cls) -> MediaBackend:
         if cls._shared is None or cls._shared._closed:
             cls._shared = cls()
         return cls._shared
@@ -97,12 +100,12 @@ class MediaBackend(QObject):
         self,
         source: MediaSource | None = None,
         *,
-        autostart=True,
-        clock=time.monotonic,
-        wall_clock=time.time,
-        tick_interval=0.25,
-        parent=None,
-    ):
+        autostart: bool = True,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        tick_interval: float = 0.25,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         if source is None:
             from core.widgets.services.media.windows import WindowsMediaSource
@@ -115,13 +118,13 @@ class MediaBackend(QObject):
         self._clock = clock
         self._wall_clock = wall_clock
         self._interval = tick_interval
-        self._records = {}
-        self._tasks = set()
-        self._timer = None
+        self._records: dict[str, _Record] = {}
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._timer: asyncio.TimerHandle | None = None
         self._closed = False
         self._started = False
-        self._manual_id = None
-        self._auto_id = None
+        self._manual_id: str | None = None
+        self._auto_id: str | None = None
         self._ready = False
         self._error = ""
         self._state = MediaState()
@@ -135,7 +138,7 @@ class MediaBackend(QObject):
     def state(self) -> MediaState:
         return self._state
 
-    def _spawn(self, coroutine):
+    def _spawn[T](self, coroutine: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
         task = self._loop.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -158,12 +161,12 @@ class MediaBackend(QObject):
             self._report_error("", str(error))
             self._publish()
 
-    def _report_error(self, session_id, message):
+    def _report_error(self, session_id: str | None, message: str):
         self._error = message
         logger.warning("Media backend: %s", message)
         self.error_occurred.emit(session_id or "", message)
 
-    def _on_event(self, kind, session_id, payload):
+    def _on_event(self, kind: str, session_id: str | None, payload: Any):
         if self._closed:
             return
         if kind == "error":
@@ -188,6 +191,8 @@ class MediaBackend(QObject):
             if self._auto_id not in live:
                 self._auto_id = None
             self._publish()
+            return
+        if session_id is None:
             return
         record = self._records.get(session_id)
         if record is None:
@@ -218,7 +223,7 @@ class MediaBackend(QObject):
             self._apply_timeline(record, payload)
         self._publish()
 
-    async def _load_metadata(self, session_id, record, revision):
+    async def _load_metadata(self, session_id: str, record: _Record, revision: int):
         try:
             metadata = await self._source.metadata(session_id)
             if not self._is_current_read(session_id, record, revision):
@@ -251,10 +256,10 @@ class MediaBackend(QObject):
                 self._report_error(session_id, str(error))
                 self._publish()
 
-    def _is_current_read(self, session_id, record, revision):
-        return not self._closed and self._records.get(session_id) is record and record.revision == revision
+    def _is_current_read(self, session_id: str, record: _Record, revision: int):
+        return not self._closed and self._records.get(session_id or "") is record and record.revision == revision
 
-    def _apply_timeline(self, record, sample):
+    def _apply_timeline(self, record: _Record, sample: Timeline):
         now = self._clock()
         self._advance(record, now)
         signature = (sample.position, sample.start, sample.updated_at, sample.known)
@@ -274,7 +279,7 @@ class MediaBackend(QObject):
         record.anchor = now
 
     @staticmethod
-    def _advance(record, now):
+    def _advance(record: _Record, now: float):
         state = record.state
         position = state.position
         if state.is_playing and state.timeline.known:
@@ -338,7 +343,7 @@ class MediaBackend(QObject):
         if self._closed:
             return False
         if session_id is not None:
-            record = self._records.get(session_id)
+            record = self._records.get(session_id or "")
             if record is None or record.state.playback.state == PlaybackState.CLOSED:
                 return False
         self._manual_id = session_id
@@ -349,7 +354,7 @@ class MediaBackend(QObject):
         ids = [s.session_id for s in self.state.usable_sessions]
         if not ids:
             return False
-        index = ids.index(self.state.active_session_id) if self.state.active_session_id in ids else 0
+        index = ids.index(self.state.active_session_id or "") if self.state.active_session_id in ids else 0
         return self.select_session(ids[(index + direction) % len(ids)])
 
     def refresh(self):
@@ -362,17 +367,17 @@ class MediaBackend(QObject):
             self._on_event("metadata", sid, None)
         self._publish()
 
-    def _request(self, action, value=None):
+    def _request(self, action: str, value: Any = None):
         sid = self.state.active_session_id
-        record = self._records.get(sid)
+        record = self._records.get(sid or "")
         revision = record.revision if record else -1
         return self._spawn(self._execute(sid, revision, action, value))
 
-    async def _execute(self, sid, revision, action, value):
+    async def _execute(self, sid: str | None, revision: int, action: str, value: Any):
         accepted = False
         try:
-            record = self._records.get(sid)
-            if self._closed or record is None:
+            record = self._records.get(sid or "")
+            if self._closed or record is None or sid is None:
                 return False
             if not getattr(record.state.capabilities, "can_" + action):
                 return False
@@ -383,7 +388,7 @@ class MediaBackend(QObject):
             if action == "repeat" and value not in (0, 1, 2):
                 return False
             accepted = await self._source.invoke(sid, action, value)
-            if accepted and not self._closed and self._records.get(sid) is record:
+            if accepted and not self._closed and self._records.get(sid or "") is record:
                 self._source.refresh(sid)
             return accepted
         except asyncio.CancelledError:

@@ -1,23 +1,42 @@
 """Bounded, worker-processed artwork backgrounds; no blur work in paintEvent."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import math
 import os
 import time
 from collections import Counter, OrderedDict
+from collections.abc import Callable
+from typing import Any, cast
 
-from PyQt6.QtCore import QEasingCurve, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QImageReader, QLinearGradient, QPainter, QPainterPath, QPixmap
-from PyQt6.QtWidgets import QFrame, QStyle, QStyleOption
+import PyQt6.QtCore as QtCore
+from PyQt6.QtCore import QEasingCurve, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import (
+    QColor,
+    QHideEvent,
+    QImage,
+    QImageReader,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPaintEvent,
+    QPixmap,
+    QShowEvent,
+)
+from PyQt6.QtWidgets import QFrame, QStyle, QStyleOption, QWidget
 
 from core.utils.qobject import is_valid_qobject
+from core.validation.widgets.yasb.media_v2 import MediaBackgroundConfig
 from core.widgets.yasb.media_v2_motion import animate, settle
+
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
 logger = logging.getLogger("MediaV2")
 
 
-def prepare_background(image, filename, radius):
+def prepare_background(image: QImage, filename: str, radius: float):
     # QImage and Pillow are worker-safe. Never create a QPixmap here.
     from PIL import Image, ImageFilter
 
@@ -35,19 +54,23 @@ def prepare_background(image, filename, radius):
         640, 640, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
     ).convertToFormat(QImage.Format.Format_RGBA8888)
     bits = image.constBits()
-    bits.setsize(image.sizeInBytes())
-    source = Image.frombytes("RGBA", (image.width(), image.height()), bytes(bits), "raw", "RGBA", image.bytesPerLine())
+    if bits is None:
+        return QImage()
+    pixels = bits.asstring(image.sizeInBytes())
+    source = Image.frombytes(  # pyright: ignore[reportUnknownMemberType] - Pillow stubs omit buffer arguments
+        "RGBA", (image.width(), image.height()), pixels, "raw", "RGBA", image.bytesPerLine()
+    )
     if radius:
         source = source.filter(ImageFilter.GaussianBlur(radius))
-    data = source.tobytes()
+    data = source.tobytes()  # pyright: ignore[reportUnknownMemberType] - Pillow variadic encoder stub
     return QImage(data, source.width, source.height, source.width * 4, QImage.Format.Format_RGBA8888).copy()
 
 
-def artwork_palette(image):
+def artwork_palette(image: QImage):
     if image.isNull():
         return ["#cba6f7", "#89b4fa", "#f38ba8"]
     sample = image.scaled(32, 32, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-    colors = Counter()
+    colors: Counter[tuple[int, int, int]] = Counter()
     for y in range(sample.height()):
         for x in range(sample.width()):
             color = sample.pixelColor(x, y)
@@ -59,7 +82,7 @@ def artwork_palette(image):
     return (result * 3)[:3]
 
 
-def prepare_assets(image, filename, radius):
+def prepare_assets(image: QImage, filename: str, radius: float):
     background = prepare_background(image, filename, radius)
     return background, artwork_palette(image if not image.isNull() else background)
 
@@ -67,7 +90,7 @@ def prepare_assets(image, filename, radius):
 class MediaSurface(QFrame):
     palette_changed = pyqtSignal(object)
 
-    def __init__(self, options, radius, parent=None):
+    def __init__(self, options: MediaBackgroundConfig, radius: float, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.options = options
         self.radius = radius
@@ -79,11 +102,11 @@ class MediaSurface(QFrame):
         self._pixmap = QPixmap()
         self._previous = QPixmap()
         self._source = QImage()
-        self._key = None
+        self._key: tuple[str | int, float] | None = None
         self._loaded_key = None
-        self._task = None
-        self._cache = OrderedDict()
-        self._palette_cache = {}
+        self._task: asyncio.Task[None] | None = None
+        self._cache: OrderedDict[Any, QPixmap] = OrderedDict()
+        self._palette_cache: dict[Any, list[str]] = {}
         self._ambient = bool(getattr(options, "ambient_motion", True))
         self._has_media = False
         self._playing = False
@@ -94,24 +117,24 @@ class MediaSurface(QFrame):
         self._orbit_timer.setInterval(83)
         self._orbit_timer.timeout.connect(self.update)
 
-    @pyqtProperty(bool)
-    def ambientMotion(self):
+    def _get_ambientMotion(self):
         return self._ambient
 
-    @ambientMotion.setter
-    def ambientMotion(self, value):
+    def _set_ambientMotion(self, value: bool):
         self._ambient = bool(value)
         self._sync_orbit()
         self._sync_ambient_opacity()
 
-    @pyqtProperty(float)
-    def ambientOpacity(self):
+    ambientMotion: bool = pyqtProperty(bool, _get_ambientMotion, _set_ambientMotion)
+
+    def _get_ambientOpacity(self):
         return self._ambient_opacity
 
-    @ambientOpacity.setter
-    def ambientOpacity(self, value):
+    def _set_ambientOpacity(self, value: float):
         self._ambient_opacity = max(0.0, min(0.08, float(value)))
         self.update()
+
+    ambientOpacity: float = pyqtProperty(float, _get_ambientOpacity, _set_ambientOpacity)
 
     def _ambient_target(self):
         if self.options.mode == "color" or not self._ambient or not self._has_media:
@@ -120,14 +143,14 @@ class MediaSurface(QFrame):
             return 0.025
         return max(0.0, min(0.08, float(getattr(self.options, "ambient_paused_opacity", 0.01))))
 
-    def _sync_ambient_opacity(self, *, animate_change=True):
+    def _sync_ambient_opacity(self, *, animate_change: bool = True):
         target = self._ambient_target()
         if animate_change and self.isVisible():
             animate(self, "ambientOpacity", target, 800, QEasingCurve.Type.InOutQuad)
         else:
             self.ambientOpacity = target
 
-    def set_media_state(self, has_media, playing):
+    def set_media_state(self, has_media: bool, playing: bool):
         has_media = bool(has_media)
         playing = bool(playing)
         if has_media != self._has_media or playing != self._playing:
@@ -136,7 +159,7 @@ class MediaSurface(QFrame):
             self._sync_orbit()
             self._sync_ambient_opacity()
 
-    def set_playing(self, playing):
+    def set_playing(self, playing: bool):
         # Backward-compatible helper for callers that only know playback state.
         self.set_media_state(bool(playing), playing)
 
@@ -148,54 +171,54 @@ class MediaSurface(QFrame):
         else:
             self._orbit_timer.stop()
 
-    @pyqtProperty(float)
-    def backgroundMix(self):
+    def _get_backgroundMix(self):
         return self._mix
 
-    @backgroundMix.setter
-    def backgroundMix(self, value):
+    def _set_backgroundMix(self, value: float):
         self._mix = value
         if value >= 1:
             self._previous = QPixmap()
         self.update()
 
-    @pyqtProperty(float)
-    def imageOpacity(self):
+    backgroundMix: float = pyqtProperty(float, _get_backgroundMix, _set_backgroundMix)
+
+    def _get_imageOpacity(self):
         return self._image_opacity
 
-    @imageOpacity.setter
-    def imageOpacity(self, value):
+    def _set_imageOpacity(self, value: float):
         self._image_opacity = max(0.0, min(1.0, value))
         self.update()
 
-    @pyqtProperty(QColor)
-    def overlayTop(self):
+    imageOpacity: float = pyqtProperty(float, _get_imageOpacity, _set_imageOpacity)
+
+    def _get_overlayTop(self):
         return self._overlay_top
 
-    @overlayTop.setter
-    def overlayTop(self, value):
+    def _set_overlayTop(self, value: QColor):
         self._overlay_top = QColor(value)
         self.update()
 
-    @pyqtProperty(QColor)
-    def overlayMiddle(self):
+    overlayTop: QColor = pyqtProperty(QColor, _get_overlayTop, _set_overlayTop)
+
+    def _get_overlayMiddle(self):
         return self._overlay_middle
 
-    @overlayMiddle.setter
-    def overlayMiddle(self, value):
+    def _set_overlayMiddle(self, value: QColor):
         self._overlay_middle = QColor(value)
         self.update()
 
-    @pyqtProperty(QColor)
-    def overlayBottom(self):
+    overlayMiddle: QColor = pyqtProperty(QColor, _get_overlayMiddle, _set_overlayMiddle)
+
+    def _get_overlayBottom(self):
         return self._overlay_bottom
 
-    @overlayBottom.setter
-    def overlayBottom(self, value):
+    def _set_overlayBottom(self, value: QColor):
         self._overlay_bottom = QColor(value)
         self.update()
 
-    def set_artwork(self, pixmap, *, clear_previous=False):
+    overlayBottom: QColor = pyqtProperty(QColor, _get_overlayBottom, _set_overlayBottom)
+
+    def set_artwork(self, pixmap: QPixmap, *, clear_previous: bool = False):
         if self.options.mode == "color":
             return
         clear_previous = clear_previous and self.options.mode == "album_art"
@@ -235,7 +258,7 @@ class MediaSurface(QFrame):
         self.destroyed.connect(cancel)
         task.add_done_callback(lambda _: self._release(cancel))
 
-    def _release(self, cancel):
+    def _release(self, cancel: Callable[[], bool]):
         if is_valid_qobject(self):
             self.destroyed.disconnect(cancel)
 
@@ -247,7 +270,7 @@ class MediaSurface(QFrame):
             else:
                 await self._load(key, self._source)
 
-    async def _load(self, key, image):
+    async def _load(self, key: Any, image: QImage):
         try:
             filename = self.options.image if self.options.mode == "image" else ""
             image, palette = await asyncio.to_thread(prepare_assets, image, filename, self.options.blur_radius)
@@ -260,7 +283,7 @@ class MediaSurface(QFrame):
             if is_valid_qobject(self) and key == self._key:
                 self._install(key, QPixmap())
 
-    def _install(self, key, pixmap, palette=None):
+    def _install(self, key: Any, pixmap: QPixmap, palette: list[str] | None = None):
         self._loaded_key = key
         self._cache[key] = pixmap
         if palette is not None:
@@ -275,25 +298,31 @@ class MediaSurface(QFrame):
         self.backgroundMix = 0.0
         animate(self, "backgroundMix", 1.0, 800, QEasingCurve.Type.InOutQuad)
 
-    def showEvent(self, event):
-        super().showEvent(event)
+    def showEvent(self, a0: QShowEvent | None):
+        if a0 is None:
+            return None
+        super().showEvent(a0)
         self._request()
         self._sync_orbit()
         self._sync_ambient_opacity(animate_change=False)
 
-    def hideEvent(self, event):
+    def hideEvent(self, a0: QHideEvent | None):
+        if a0 is None:
+            return None
         self._orbit_timer.stop()
         if self._task:
             self._task.cancel()
             self._task = None
         settle(self)
-        super().hideEvent(event)
+        super().hideEvent(a0)
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
         painter = QPainter(self)
         option = QStyleOption()
         option.initFrom(self)
-        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
+        cast(QStyle, self.style()).drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
         if self.options.mode == "color":
             color = getattr(self.options, "color", None)
             if color:

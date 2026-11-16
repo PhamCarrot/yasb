@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import logging
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self, cast
 
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 from PyQt6.QtGui import QColor
@@ -25,16 +27,16 @@ class MediaBackgroundConfig(CustomBaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_qss_mode(cls, data: Any):
-        if isinstance(data, dict) and data.get("mode") == "qss":
-            values = dict(data)
+    def migrate_qss_mode(cls, data: Any) -> Any:
+        if isinstance(data, dict) and cast(dict[str, Any], data).get("mode") == "qss":
+            values = dict(cast(dict[str, Any], data))
             values["mode"] = "color"
             logger.warning("[DEPRECATED] MediaBackgroundConfig: mode 'qss' renamed to 'color'.")
             return values
-        return data
+        return cast(Any, data)
 
     @model_validator(mode="after")
-    def require_image(self):
+    def require_image(self) -> Self:
         if self.mode == "image" and not self.image.strip():
             raise ValueError("popup.background.image is required in image mode")
         if self.color is not None and not QColor(self.color).isValid():
@@ -71,13 +73,13 @@ class MediaEqualizerConfig(CustomBaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_blur_slide(cls, data: Any):
-        if isinstance(data, dict) and data.get("preset_effect") == "blur_slide":
-            values = dict(data)
+    def migrate_blur_slide(cls, data: Any) -> Any:
+        if isinstance(data, dict) and cast(dict[str, Any], data).get("preset_effect") == "blur_slide":
+            values = dict(cast(dict[str, Any], data))
             values["preset_effect"] = "none"
             logger.warning("[DEPRECATED] MediaEqualizerConfig: preset_effect 'blur_slide' was removed; using 'none'.")
             return values
-        return data
+        return cast(Any, data)
 
 
 class MediaBorderConfig(CustomBaseModel):
@@ -139,7 +141,7 @@ class MediaV2PopupConfig(CustomBaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_legacy_popup_options(cls, data: Any):
+    def migrate_legacy_popup_options(cls, data: Any) -> Any:
         """Accept the old Media V2 popup vocabulary without keeping two public APIs.
 
         Canonical configuration uses PopupWidget-style alignment/direction/offsets.
@@ -148,7 +150,7 @@ class MediaV2PopupConfig(CustomBaseModel):
         """
         if not isinstance(data, dict):
             return data
-        values = dict(data)
+        values = dict(cast(dict[str, Any], data))
 
         if "scrolling" in values:
             legacy_scrolling = values.pop("scrolling")
@@ -158,7 +160,7 @@ class MediaV2PopupConfig(CustomBaseModel):
 
         background = values.get("background")
         if isinstance(background, dict) and "native_blur" in background:
-            background = dict(background)
+            background = dict(cast(dict[str, Any], background))
             raw_native_blur = background.pop("native_blur")
             try:
                 native_blur = LEGACY_BOOLEAN.validate_python(raw_native_blur)
@@ -209,7 +211,7 @@ class MediaV2PopupConfig(CustomBaseModel):
         return values
 
     @model_validator(mode="after")
-    def unique_sections(self):
+    def unique_sections(self) -> Self:
         if len(set(self.detail_order)) != len(self.detail_order):
             raise ValueError("popup.detail_order must not contain duplicate sections")
         return self
@@ -235,14 +237,14 @@ class MediaV2Config(CustomBaseModel):
             on_left="toggle_media_menu", on_middle="play_pause", on_right="automatic_selection"
         )
     )
-    keybindings: list[KeybindingConfig] = Field(default_factory=list)
+    keybindings: list[KeybindingConfig] = Field(default_factory=lambda: list[KeybindingConfig]())
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_bar_scrolling(cls, data: Any):
+    def migrate_bar_scrolling(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        values = dict(data)
+        values = dict(cast(dict[str, Any], data))
         if "bar_scrolling" in values:
             legacy_scrolling = values.pop("bar_scrolling")
             if "scrolling_label" not in values:
