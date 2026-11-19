@@ -221,6 +221,8 @@ class DiscArt(AlbumArt):
             return
         dt = min(0.25, max(0.0, now - self._last_tick))
         self._last_tick = now
+        levels, kick = self._levels, self._kick
+        motion = self._rhythm_scale, self._rhythm_offset_y, self._rhythm_tilt
         if self.options.spin:
             self._angle = (self._angle + dt * 360 / 25) % 360
         if self._lease.attached:
@@ -247,7 +249,18 @@ class DiscArt(AlbumArt):
         self._rhythm_scale += (scale_target - self._rhythm_scale) * (1 - math.exp(-dt * 18))
         self._rhythm_offset_y += (bounce_target - self._rhythm_offset_y) * (1 - math.exp(-dt * 22))
         self._rhythm_tilt += (tilt_target - self._rhythm_tilt) * (1 - math.exp(-dt * 14))
-        self.update()
+        # The fallback cover and rings do not use the angle. Keep advancing
+        # it for incoming artwork, including while the capture is silent.
+        rotating_cover = self.options.spin and (
+            (self._mix > 0 and not self._pixmap.isNull()) or (self._mix < 1 and not self._old_pixmap.isNull())
+        )
+        if (
+            rotating_cover
+            or (self.options.visualizer and levels != self._levels)
+            or (self.options.glow and kick != self._kick)
+            or motion != (self._rhythm_scale, self._rhythm_offset_y, self._rhythm_tilt)
+        ):
+            self.update()
 
     def paintEvent(self, a0: QPaintEvent | None):
         if a0 is None:
@@ -261,6 +274,8 @@ class DiscArt(AlbumArt):
         available, max_bar_height, _, max_pen_width, _ = self._effect_limits()
         radius = available * 0.86 * self._disc_scale * self._rhythm_scale
         margin = available * 0.14
+        logical_scale = self._logical_scale()
+        accent = self.accentColor
         glow_strength = max(0.0, float(getattr(self.options, "glow_strength", 1.0)))
         if self.options.glow and self._playing and glow_strength > 0:
             painter.setPen(Qt.PenStyle.NoPen)
@@ -273,10 +288,10 @@ class DiscArt(AlbumArt):
             ):
                 outer = min(
                     radius + margin * outer_scale,
-                    available - self.EDGE_INSET_LOGICAL * self._logical_scale() - abs(self._rhythm_offset_y),
+                    available - self.EDGE_INSET_LOGICAL * logical_scale - abs(self._rhythm_offset_y),
                 )
                 glow = QRadialGradient(center, outer)
-                color = QColor(self.accentColor)
+                color = QColor(accent)
                 color.setAlphaF(min(1.0, glow_strength * (base_alpha + self._kick * kick_alpha)))
                 edge = max(0.0, min(0.98, (radius - 5) / outer))
                 clear = QColor(color)
@@ -291,12 +306,13 @@ class DiscArt(AlbumArt):
         if self.options.visualizer:
             painter.save()
             painter.translate(center)
-            width = min(max_pen_width, max(2.0 * self._logical_scale(), 2 * math.pi * radius / 60 * 0.65))
+            min_height = 2.0 * logical_scale
+            width = min(max_pen_width, max(min_height, 2 * math.pi * radius / 60 * 0.65))
             for i, level in enumerate(self._levels):
-                color = QColor(self.accentColor).lighter(round(100 + ((i / 60) * 0.4 + level * 0.6) * 45))
+                color = accent.lighter(round(100 + ((i / 60) * 0.4 + level * 0.6) * 45))
                 color.setAlphaF(0.4 + level * 0.6)
                 painter.setPen(QPen(color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                height = min(max_bar_height, max(2.0 * self._logical_scale(), level * margin * 1.4))
+                height = min(max_bar_height, max(min_height, level * margin * 1.4))
                 painter.drawLine(QPointF(0, -radius), QPointF(0, -radius - height))
                 painter.rotate(6)
             painter.restore()

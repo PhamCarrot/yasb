@@ -13,6 +13,7 @@ from PyQt6.QtCore import (
     QEvent,
     QPoint,
     QPointF,
+    QPropertyAnimation,
     QRect,
     QRectF,
     QSize,
@@ -34,6 +35,7 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
     QResizeEvent,
+    QShowEvent,
     QWheelEvent,
 )
 from PyQt6.QtWidgets import (
@@ -46,6 +48,8 @@ from PyQt6.QtWidgets import (
     QSlider,
     QStyle,
     QStyleOption,
+    QStyleOptionComboBox,
+    QStylePainter,
     QWidget,
 )
 
@@ -60,6 +64,7 @@ __all__ = [
     "AlbumArt",
     "InfoButton",
     "MediaButton",
+    "CancellableSlider",
     "MediaComboBox",
     "MediaText",
     "SeekSlider",
@@ -103,6 +108,45 @@ def media_title(active: MediaSessionState | None):
     return "Unknown title" if active.metadata_ready else "Loading media…"
 
 
+class CancellableSlider(QSlider):
+    """Retire a held native slider gesture until release or a fresh press.
+
+    QSlider keeps an internal pressed subcontrol after setSliderDown(False).
+    Reopening a view while the old mouse button is held must not resume it.
+    """
+
+    def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
+        super().__init__(orientation, parent)
+        self._drag_cancelled = False
+
+    def cancel_interaction(self) -> None:
+        self._drag_cancelled = self._drag_cancelled or self.isSliderDown()
+        blocked = self.blockSignals(True)
+        self.setSliderDown(False)
+        self.blockSignals(blocked)
+        if QWidget.mouseGrabber() is self:
+            self.releaseMouse()
+
+    def mousePressEvent(self, ev: QMouseEvent | None) -> None:
+        self._drag_cancelled = False
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev: QMouseEvent | None) -> None:
+        if not self._drag_cancelled:
+            super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev: QMouseEvent | None) -> None:
+        if self._drag_cancelled:
+            # Let Qt retire its internal subcontrol without a delayed release
+            # signal recreating the discarded draft or committing Audio.
+            blocked = self.blockSignals(True)
+            super().mouseReleaseEvent(ev)
+            self.blockSignals(blocked)
+            self._drag_cancelled = False
+        else:
+            super().mouseReleaseEvent(ev)
+
+
 class MediaButton(QPushButton):
     """YASB-style semantic button; Qt owns normal interaction pseudo-states."""
 
@@ -125,14 +169,16 @@ class MediaButton(QPushButton):
 
 
 class MediaComboBox(QComboBox):
-    """Hidden selector model backed by a reliably anchored player menu."""
+    """Selector model backed by a reliably anchored player menu."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._mode = "automatic"
+        self._display_label: str | None = None
         self._anchor = None
         self._menu_active = False
+        self._menu_options: list[tuple[Any, str, bool]] = []
         self._sync_class()
         view = self.view()
         assert view is not None
@@ -145,6 +191,21 @@ class MediaComboBox(QComboBox):
         self.popup_menu.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.popup_menu.aboutToShow.connect(self._menu_shown)
         self.popup_menu.aboutToHide.connect(self._menu_hidden)
+
+    def set_display_label(self, label: str) -> None:
+        self._display_label = label
+        self.update()
+
+    def paintEvent(self, e: QPaintEvent | None) -> None:
+        if self._display_label is None:
+            super().paintEvent(e)
+            return
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        option.currentText = self._display_label
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
 
     @property
     def menu_active(self):
@@ -188,19 +249,38 @@ class MediaComboBox(QComboBox):
             self._rebuild_menu()
 
     def _rebuild_menu(self):
+        model = self.model()
+        assert model is not None
+        options = [
+            (
+                self.itemData(index),
+                self.itemText(index),
+                bool(model.flags(model.index(index, 0)) & Qt.ItemFlag.ItemIsEnabled),
+            )
+            for index in range(self.count())
+        ]
+        if options == self._menu_options and len(self.popup_menu.actions()) == len(options):
+            for index, action in enumerate(self.popup_menu.actions()):
+                action.setChecked(index == self.currentIndex())
+            return
+        active = self.popup_menu.activeAction()
+        active_id = active.data() if active is not None else None
+        had_active = active is not None
         self.popup_menu.clear()
+        self._menu_options = options
         current = self.currentIndex()
-        for index in range(self.count()):
-            action = self.popup_menu.addAction(self.itemText(index))
+        for index, (sid, label, enabled) in enumerate(options):
+            action = self.popup_menu.addAction(label)
             assert action is not None
+            action.setData(sid)
             action.setCheckable(True)
             action.setChecked(index == current)
-            model = self.model()
-            assert model is not None
-            action.setEnabled(bool(model.flags(model.index(index, 0)) & Qt.ItemFlag.ItemIsEnabled))
+            action.setEnabled(enabled)
+            if had_active and sid == active_id and enabled:
+                self.popup_menu.setActiveAction(action)
 
-            def activate(checked: bool = False, item: int = index) -> None:
-                self._activate(item)
+            def activate(checked: bool = False, item_id: Any = sid) -> None:
+                self._activate(self.findData(item_id))
 
             action.triggered.connect(activate)
 
@@ -281,6 +361,11 @@ class InfoButton(MediaButton):
             return None
         if a0.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._activation_mode = "keyboard"
+            if a0.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if self.isEnabled() and not a0.isAutoRepeat():
+                    self.click()
+                a0.accept()
+                return
         super().keyPressEvent(a0)
 
     def _get_highlightEnabled(self):
@@ -774,6 +859,34 @@ class TransportControls(QFrame):
         self.play.set_playing(bool(active and active.is_playing))
 
 
+def seek_wave_path(
+    start: float,
+    end: float,
+    baseline: float,
+    amplitude: float,
+    wavelength: float,
+    phase: float,
+    taper_end: float,
+    scale: float,
+) -> QPainterPath:
+    """Independent bounded raster wave, expressed in logical view coordinates."""
+    path = QPainterPath(QPointF(start, baseline))
+    span = max(0.0, end - start)
+    lead = max(1.0, min(64 * scale, span * 0.34))
+    trail = max(1.0, min(taper_end, span * 0.48))
+    angular = math.tau / max(1.0, wavelength)
+    steps = max(1, min(512, math.ceil(span / max(1.0, 2 * scale))))
+    for index in range(steps + 1):
+        offset = span * index / steps
+        taper = min(1.0, offset / lead, (span - offset) / trail)
+        envelope = taper * taper * (3 - 2 * taper)
+        crest = (1 + math.sin(angular * offset - phase)) / 2
+        path.lineTo(start + offset, baseline - amplitude * envelope * crest)
+    path.lineTo(end, baseline)
+    path.closeSubpath()
+    return path
+
+
 class SeekSlider(QSlider):
     interaction_started = pyqtSignal()
     preview_changed = pyqtSignal(float)
@@ -790,8 +903,8 @@ class SeekSlider(QSlider):
         self.setRange(0, 10000)
         self.setSingleStep(100)
         self.setPageStep(1000)
-        self.setFixedHeight(round(15 * scale))
-        self.handle_size = max(10, round(13 * scale))
+        self.setFixedHeight(round(50 * scale))
+        self.handle_size = max(10, round(17 * scale))
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setAccessibleName("Playback position")
         # QSlider's platform style can paint a rectangular primitive behind
@@ -803,6 +916,19 @@ class SeekSlider(QSlider):
         for visual in (self._track, self._fill, self._handle):
             visual.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             visual.hide()
+        self._playing = False
+        self._hovered = False
+        self._wave_phase = 0.0
+        self._wave_amplitude = 0.0
+        self._wave_opacity = 0.55
+        self._handle_scale = 1.0
+        self._handle_tint = 0.0
+        self._wave_clock = QPropertyAnimation(self, b"wavePhase", self)
+        self._wave_clock.setStartValue(0.0)
+        self._wave_clock.setEndValue(20 * math.pi)
+        self._wave_clock.setDuration(30000)
+        self._wave_clock.setLoopCount(-1)
+        self._wave_clock.setEasingCurve(QEasingCurve.Type.Linear)
         self._dragging = False
         self._target = None
         self._pending = None
@@ -819,10 +945,11 @@ class SeekSlider(QSlider):
 
     def _visual_rects(self, progress: float | None = None):
         handle = self.handle_size
-        track_h = max(4, round(6 * self._scale))
+        track_h = max(4, round(9 * self._scale))
         usable = max(1, self.width() - handle)
         left = handle / 2
-        top = max(0.0, (self.height() - track_h) / 2)
+        baseline = 38.1 * self._scale
+        top = max(0.0, baseline - track_h / 2)
         if progress is None:
             progress = self.sliderPosition() / self.maximum() if self._dragging else self._visual_progress
         progress = max(0.0, min(1.0, progress))
@@ -831,11 +958,11 @@ class SeekSlider(QSlider):
         return (
             QRectF(left, top, usable, track_h),
             QRectF(left, top, max(0.0, fill_w), track_h),
-            QRectF(center_x - handle / 2, (self.height() - handle) / 2, handle, handle),
+            QRectF(center_x - handle / 2, baseline - handle / 2, handle, handle),
         )
 
     @staticmethod
-    def _paint_styled_frame(painter: QPainter, frame: QFrame, target: Any):
+    def _paint_styled_frame(painter: QPainter, frame: QFrame, target: Any, *, capsule: bool = False):
         if target.width() <= 0 or target.height() <= 0:
             return
         size = QSize(max(1, math.ceil(target.width())), max(1, math.ceil(target.height())))
@@ -846,7 +973,14 @@ class SeekSlider(QSlider):
         option.rect = QRect(0, 0, size.width(), size.height())
         painter.save()
         painter.translate(target.topLeft())
-        painter.setClipRect(QRectF(0, 0, target.width(), target.height()))
+        bounds = QRectF(0, 0, target.width(), target.height())
+        if capsule:
+            clip = QPainterPath()
+            radius = min(bounds.width(), bounds.height()) / 2
+            clip.addRoundedRect(bounds, radius, radius)
+            painter.setClipPath(clip, Qt.ClipOperation.IntersectClip)
+        else:
+            painter.setClipRect(bounds, Qt.ClipOperation.IntersectClip)
         cast(QStyle, frame.style()).drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, frame)
         painter.restore()
 
@@ -865,10 +999,162 @@ class SeekSlider(QSlider):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         track, fill, handle = self._visual_rects()
-        self._paint_styled_frame(painter, self._track, track)
-        self._paint_styled_frame(painter, self._fill, fill)
+        painter.setOpacity(self._wave_opacity * 0.28)
+        self._paint_styled_frame(painter, self._track, track, capsule=True)
+        painter.setOpacity(self._wave_opacity)
+        self._paint_styled_frame(painter, self._fill, fill, capsule=True)
+        if self._wave_amplitude > 0.001 and fill.width() > 0:
+            baseline = track.top() + self._scale
+            swell = 0.84 + 0.16 * math.cos(self._wave_phase * 1.1 + math.pi)
+            wave_end = min(track.right(), max(fill.right(), track.left() + 64 * self._scale))
+            for factor, alpha, taper, wavelength, phase in (
+                (0.65, 0.5, 130, 1.75, self._wave_phase),
+                (0.71 * swell, 0.9, 105, 1.05, 2.2 * self._wave_phase + 1.8),
+            ):
+                path = seek_wave_path(
+                    track.left(),
+                    wave_end,
+                    baseline,
+                    14 * self._scale * factor * self._wave_amplitude,
+                    track.width() / 3 * wavelength,
+                    phase,
+                    taper * self._scale,
+                    self._scale,
+                )
+                painter.save()
+                painter.setClipPath(path)
+                painter.setOpacity(self._wave_opacity * alpha)
+                self._paint_styled_frame(
+                    painter,
+                    self._fill,
+                    QRectF(
+                        track.left(),
+                        baseline - 14 * self._scale,
+                        wave_end - track.left(),
+                        14 * self._scale,
+                    ),
+                )
+                painter.restore()
         if self._show_handle:
-            self._paint_styled_frame(painter, self._handle, handle)
+            painter.setOpacity(1.0)
+            painter.translate(handle.center())
+            painter.scale(self._handle_scale, self._handle_scale)
+            painter.translate(-handle.center())
+            painter.setPen(Qt.PenStyle.NoPen)
+            for padding, opacity in ((3.0, 9), (2.0, 18), (1.0, 35)):
+                pad = padding * self._scale
+                painter.setBrush(QColor(0, 0, 0, opacity))
+                painter.drawEllipse(handle.adjusted(-pad, -pad, pad, pad).translated(0.0, self._scale))
+            self._paint_styled_frame(painter, self._handle, handle, capsule=True)
+            if self._handle_tint > 0:
+                painter.setBrush(QColor(255, 255, 255, round(38 * self._handle_tint)))
+                painter.drawEllipse(handle)
+
+    def _get_wave_phase(self) -> float:
+        return self._wave_phase
+
+    def _set_wave_phase(self, value: float) -> None:
+        self._wave_phase = value
+        self.update()
+
+    wavePhase: float = pyqtProperty(float, _get_wave_phase, _set_wave_phase)
+
+    def _get_wave_amplitude(self) -> float:
+        return self._wave_amplitude
+
+    def _set_wave_amplitude(self, value: float) -> None:
+        self._wave_amplitude = max(0.0, min(1.0, value))
+        self._sync_wave_clock()
+        self.update()
+
+    waveAmplitude: float = pyqtProperty(float, _get_wave_amplitude, _set_wave_amplitude)
+
+    def _get_wave_opacity(self) -> float:
+        return self._wave_opacity
+
+    def _set_wave_opacity(self, value: float) -> None:
+        self._wave_opacity = value
+        self.update()
+
+    waveOpacity: float = pyqtProperty(float, _get_wave_opacity, _set_wave_opacity)
+
+    def _get_handle_scale(self) -> float:
+        return self._handle_scale
+
+    def _set_handle_scale(self, value: float) -> None:
+        self._handle_scale = value
+        self.update()
+
+    handleScale: float = pyqtProperty(float, _get_handle_scale, _set_handle_scale)
+
+    def _get_handle_tint(self) -> float:
+        return self._handle_tint
+
+    def _set_handle_tint(self, value: float) -> None:
+        self._handle_tint = value
+        self.update()
+
+    handleTint: float = pyqtProperty(float, _get_handle_tint, _set_handle_tint)
+
+    def set_playing(self, playing: bool) -> None:
+        if self._playing == playing:
+            return
+        self._playing = playing
+        if self.isVisible():
+            animate(self, "waveAmplitude", 1.0 if playing else 0.0, 600, QEasingCurve.Type.OutQuad)
+        else:
+            self.waveAmplitude = 1.0 if playing else 0.0
+        self._sync_emphasis()
+        self._sync_wave_clock()
+
+    def _sync_wave_clock(self) -> None:
+        active = self.isVisible() and (self._playing or self._wave_amplitude > 0.001)
+        state = self._wave_clock.state()
+        if active:
+            if state == QPropertyAnimation.State.Stopped:
+                self._wave_clock.start()
+            elif state == QPropertyAnimation.State.Paused:
+                self._wave_clock.resume()
+        elif state == QPropertyAnimation.State.Running:
+            self._wave_clock.pause()
+
+    def _sync_emphasis(self) -> None:
+        if not self.isVisible():
+            return
+        animate(
+            self,
+            "waveOpacity",
+            1.0 if self._playing or self._hovered or self._dragging else 0.55,
+            400,
+            QEasingCurve.Type.OutQuad,
+        )
+        if self._show_handle:
+            animate(
+                self,
+                "handleScale",
+                1.25 if self._dragging else 1.15 if self._hovered else 1.0,
+                150,
+                QEasingCurve.Type.OutBack,
+            )
+            animate(self, "handleTint", float(self._hovered or self._dragging), 150, QEasingCurve.Type.Linear)
+
+    def enterEvent(self, event: QEnterEvent | None) -> None:
+        self._hovered = True
+        self._sync_emphasis()
+        super().enterEvent(event)
+
+    def leaveEvent(self, a0: QEvent | None) -> None:
+        self._hovered = False
+        self._sync_emphasis()
+        super().leaveEvent(a0)
+
+    def showEvent(self, a0: QShowEvent | None) -> None:
+        super().showEvent(a0)
+        self.waveAmplitude = 1.0 if self._playing else 0.0
+        self.handleScale = 1.0
+        self.handleTint = 0.0
+        self.waveOpacity = 1.0 if self._playing else 0.55
+        self._sync_wave_clock()
 
     @property
     def interacting(self):
@@ -904,19 +1190,23 @@ class SeekSlider(QSlider):
             projected = target + float(velocity) * self._smoothing_ms / 1000
             animate(self, "visualProgress", max(0.0, min(1.0, projected)), self._smoothing_ms, QEasingCurve.Type.Linear)
         else:
-            settle(self)
+            motion = getattr(self, "_motion", {}).get("visualProgress")
+            if motion is not None:
+                motion.stop()
             self.visualProgress = target
 
     def cancel_interaction(self):
         # Preserve the user's value: settling a stopped position animation would
         # otherwise overwrite the release position with its old backend target.
-        for animation in getattr(self, "_motion", {}).values():
-            animation.stop()
+        motion = getattr(self, "_motion", {}).get("visualProgress")
+        if motion is not None:
+            motion.stop()
         self._seek_timeout.stop()
         self._dragging = False
         self._pending = None
         self._target = None
         self.setSliderDown(False)
+        self._sync_emphasis()
         self.update()
 
     def _begin(self):
@@ -965,6 +1255,7 @@ class SeekSlider(QSlider):
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         self._begin()
         self._dragging = True
+        self._sync_emphasis()
         self.setSliderDown(True)
         self._point(ev)
         ev.accept()
@@ -1030,11 +1321,14 @@ class SeekSlider(QSlider):
     def hideEvent(self, a0: QHideEvent | None):
         if a0 is None:
             return None
+        self._hovered = False
         self.cancel_interaction()
+        if self._wave_clock.state() == QPropertyAnimation.State.Running:
+            self._wave_clock.pause()
         for animation in getattr(self, "_motion", {}).values():
             animation.stop()
         self.visualProgress = self._last_progress
         super().hideEvent(a0)
 
     def sizeHint(self):
-        return QSize(200, self.handle_size)
+        return QSize(200, round(50 * self._scale))

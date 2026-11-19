@@ -1,6 +1,7 @@
 import logging
 import os
 from collections.abc import Callable
+from functools import partial
 from typing import Any, cast, override
 
 import PyQt6.QtCore as QtCore
@@ -22,7 +23,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qasync import asyncSlot  # type: ignore
 
 from core.utils.icons.service import AppIcon, IconService, ProcessIcon
 from core.utils.qobject import is_valid_qobject
@@ -61,6 +61,8 @@ class MediaWidget(BaseWidget):
 
         self.media = WindowsMedia()
         self.current_session: SessionState | None = None
+        self._seek_identity: tuple[QSlider, str, int, float] | None = None
+        self._seeking = False
         self.dialog: PopupWidget | None = None
         self._seeking = False
         self._empty_thumb_cache: dict[tuple[int, float], QPixmap] = {}
@@ -147,6 +149,20 @@ class MediaWidget(BaseWidget):
     def _on_media_data_changed(self, data: dict[str, SessionState]):
         old = self.current_session
         self.current_session = next((s for s in data.values() if s.is_current), None)
+        session = self.current_session
+        if (
+            not session
+            or not session.is_seekable
+            or (
+                self._seek_identity is not None
+                and self._seek_identity[1:3] != (session.session_id, session.seek_revision)
+            )
+        ):
+            self._cancel_seek()
+        slider = getattr(self, "_progress_slider", None)
+        if is_valid_qobject(slider):
+            slider.setEnabled(bool(session and session.is_seekable))
+
         self._update_interpolated_position()
 
         if self.current_session is None:
@@ -215,6 +231,7 @@ class MediaWidget(BaseWidget):
             self.show_menu()
 
     def show_menu(self):
+        self._cancel_seek()
         if self.current_session is None:
             return
         if not is_valid_qobject(self.dialog):
@@ -338,8 +355,9 @@ class MediaWidget(BaseWidget):
         self._progress_slider.setProperty("class", "progress-slider")
         self._progress_slider.setMinimum(0)
         self._progress_slider.setMaximum(1000)
-        self._progress_slider.sliderPressed.connect(self._on_slider_pressed)
-        self._progress_slider.sliderReleased.connect(self._on_slider_released)
+        self._progress_slider.setEnabled(bool(self.current_session and self.current_session.is_seekable))
+        self._progress_slider.sliderPressed.connect(partial(self._on_slider_pressed, self._progress_slider))
+        self._progress_slider.sliderReleased.connect(partial(self._on_slider_released, self._progress_slider))
         self._progress_slider.valueChanged.connect(self._on_slider_value_changed)
 
         time_slider_layout.addWidget(self._progress_slider)
@@ -553,7 +571,7 @@ class MediaWidget(BaseWidget):
         self._popup_current_time_label.setText(self._format_time(min(position, duration)) if usable else "00:00")
         self._popup_total_time_label.setText(self._format_time(duration) if usable else "00:00")
         if usable:
-            self._progress_slider.setEnabled(True)
+            self._progress_slider.setEnabled(session.is_seekable)
             self._progress_slider.setValue(min(1000, int((min(position, duration) / duration) * 1000)))
         else:
             self._progress_slider.blockSignals(True)
@@ -851,22 +869,50 @@ class MediaWidget(BaseWidget):
         except Exception as e:
             logger.error("Error updating interpolated position: %s", e)
 
-    def _on_slider_pressed(self):
-        self._seeking = True
+    def _cancel_seek(self):
+        gesture, self._seek_identity = self._seek_identity, None
+        self._seeking = False
+        if gesture is not None and is_valid_qobject(gesture[0]):
+            gesture[0].setSliderDown(False)
 
-    @asyncSlot()
-    async def _on_slider_released(self):
-        try:
-            if not is_valid_qobject(self.dialog):
-                return
-            value = self._progress_slider.value()
-            if self.current_session and self.current_session.duration > 0:
-                try:
-                    await self.media.seek_to_position((value / 1000.0) * self.current_session.duration)
-                except Exception as e:
-                    logger.error("Error seeking: %s", e)
-        finally:
-            self._seeking = False
+    def _on_slider_pressed(self, slider: QSlider):
+        if slider is not self._progress_slider or not is_valid_qobject(slider):
+            return
+        self._cancel_seek()
+        session = self.current_session
+        dialog = getattr(self, "dialog", None)
+        if (
+            session
+            and session.is_seekable
+            and session.seek_revision is not None
+            and is_valid_qobject(dialog)
+            and dialog.isVisible()
+            and not dialog._is_closing
+            and slider is self._progress_slider
+        ):
+            self._seek_identity = (slider, session.session_id, session.seek_revision, session.duration)
+            self._seeking = True
+
+    def _on_slider_released(self, slider: QSlider):
+        gesture = self._seek_identity
+        if gesture is None or gesture[0] is not slider:
+            return
+        self._seek_identity = None
+        self._seeking = False
+        session = self.current_session
+        dialog = getattr(self, "dialog", None)
+        if (
+            session
+            and session.is_seekable
+            and gesture[1:3] == (session.session_id, session.seek_revision)
+            and is_valid_qobject(slider)
+            and slider is self._progress_slider
+            and is_valid_qobject(dialog)
+            and dialog.isVisible()
+            and not dialog._is_closing
+        ):
+            position = (slider.value() / 1000.0) * gesture[3]
+            self.media.seek_to_position(position, expected_revision=gesture[2])
 
     def _on_slider_value_changed(self, value: int):
         if not self._seeking or not self.current_session or self.current_session.duration <= 0:
@@ -1154,6 +1200,8 @@ class WheelEventFilter(QObject):
         self.media_widget = parent
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+        if event.type() == QEvent.Type.Hide and obj is self.media_widget.dialog:
+            self.media_widget._cancel_seek()  # pyright: ignore[reportPrivateUsage]
         if event.type() != QEvent.Type.Wheel:
             return False
         event = cast(QWheelEvent, event)

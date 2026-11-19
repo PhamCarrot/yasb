@@ -31,15 +31,16 @@ def lower_left_clockwise_path(rect: QRectF, radius: float) -> QPainterPath:
     """Rounded-rect path with a deterministic lower-left clockwise start."""
     radius = max(0.0, min(float(radius), rect.width() / 2, rect.height() / 2))
     left, top, right, bottom = rect.left(), rect.top(), rect.right(), rect.bottom()
+    diameter = 2 * radius
     path = QPainterPath(QPointF(left, bottom - radius))
     path.lineTo(left, top + radius)
-    path.quadTo(left, top, left + radius, top)
+    path.arcTo(QRectF(left, top, diameter, diameter), 180, -90)
     path.lineTo(right - radius, top)
-    path.quadTo(right, top, right, top + radius)
+    path.arcTo(QRectF(right - diameter, top, diameter, diameter), 90, -90)
     path.lineTo(right, bottom - radius)
-    path.quadTo(right, bottom, right - radius, bottom)
+    path.arcTo(QRectF(right - diameter, bottom - diameter, diameter, diameter), 0, -90)
     path.lineTo(left + radius, bottom)
-    path.quadTo(left, bottom, left, bottom - radius)
+    path.arcTo(QRectF(left, bottom - diameter, diameter, diameter), 270, -90)
     path.closeSubpath()
     return path
 
@@ -55,7 +56,7 @@ class MediaBorder(QFrame):
         # The content slightly underlaps the inner half of the animated stroke.
         # Keeping these radii concentric removes the transparent crescent that
         # otherwise appears at rounded corners.
-        self.content_inset = max(1, round(2 * self.scale))
+        self.content_inset = max(1, round(3 * self.scale))
         self.content_radius = max(0.0, float(self.radius - self.content_inset))
         self.charge_duration = max(0.001, float(getattr(options, "charge_duration", 1.2)))
         self.rotation_duration = max(0.001, float(getattr(options, "rotation_duration", 5.0)))
@@ -170,7 +171,7 @@ class MediaBorder(QFrame):
             gradient.setColorAt(stop, color)
         width = 3 * self.scale
         rect = QRectF(self.rect()).adjusted(width / 2, width / 2, -width / 2, -width / 2)
-        path = lower_left_clockwise_path(rect, self.radius)
+        path = lower_left_clockwise_path(rect, self.radius - width / 2)
         pen = QPen(QBrush(gradient), width)
         charge = QEasingCurve(QEasingCurve.Type.OutCubic).valueForProgress(min(1.0, elapsed / self.charge_duration))
         if charge < 1:

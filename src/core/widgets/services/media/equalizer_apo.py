@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import codecs
 import logging
 import os
@@ -9,26 +11,39 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from collections import OrderedDict
+from collections.abc import Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 
 from PyQt6.QtCore import QObject
 
 from core.widgets.services.media.audio_device import DefaultAudioOutputService
+from core.widgets.services.media.native_api import NativeParameters
+from core.widgets.services.media.native_route import (
+    NativeApoRoute,
+    NativeAudioState,
+    NativeCommit,
+    NativeObservation,
+    NativeRouteOptions,
+    canonical,
+    native_parameters,
+)
 
 try:
     import winreg
 except ImportError:
     winreg = None
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from core.utils.qobject import is_valid_qobject
 from core.widgets.services.media.audio_device import AudioOutputState
 
 logger = logging.getLogger("EqualizerAPO")
@@ -68,13 +83,55 @@ class ApoApplyResult:
     detail: str = ""
     applied: bool = False
     external_filters: bool = False
+    state: ApoAppliedState | None = None
+    native_parameters: NativeParameters | None = None
+
+
+@dataclass(frozen=True)
+class ApoWriteOptions:
+    auto_preamp: bool
+    preamp_db: float
+    manage_include: bool
+    processor: str = "graphic_eq"
+    native: NativeRouteOptions | None = None
+
+    @classmethod
+    def snapshot(cls, options: Any, *, native_profile: str | None = None) -> ApoWriteOptions:
+        processor = str(getattr(options, "processor", "graphic_eq"))
+        native = getattr(options, "native", None)
+        if processor == "native" and native is None:
+            from core.config import get_config_dir
+
+            native = NativeRouteOptions(
+                canonical(native_profile if native_profile is not None else get_config_dir()),
+                str(getattr(options, "native_library", "")),
+                str(getattr(options, "native_sha256", "")).lower(),
+            )
+        return cls(bool(options.auto_preamp), float(options.preamp_db), bool(options.manage_include), processor, native)
+
+
+@dataclass(frozen=True)
+class ApoAppliedState:
+    target: str
+    revision: int
+    gains: tuple[float, ...]
+    output: AudioOutputState
+    options: ApoWriteOptions
+    audio: NativeAudioState = NativeAudioState()
 
 
 @dataclass(frozen=True)
 class ApoWriteRequest:
     generation: int
+    intent_revision: int
     gains: tuple[float, ...]
     output: AudioOutputState
+    options: ApoWriteOptions
+    manager: EqualizerApoConfigManager
+    target: str
+    output_service: DefaultAudioOutputService
+    audio: NativeAudioState = NativeAudioState()
+    restore: bool = False
 
 
 class ExistingConfigKind(StrEnum):
@@ -201,6 +258,26 @@ def render_managed_config(
         "",
     ]
     return "\n".join(lines)
+
+
+def render_native_config(route: NativeApoRoute, commit: NativeCommit, endpoint_guid: str) -> str:
+    chunk = base64.b64encode(commit.bootstrap.pack()).decode("ascii")
+    return "\n".join(
+        [
+            "# Media Widget V2 managed Equalizer APO configuration.",
+            "# Native route bootstrap; current settings live in the selected YASB profile.",
+            "",
+            build_device_selector(endpoint_guid),
+            "Channel: L R",
+            "",
+            f'VSTPlugin: Library "{route.api.path}" ChunkData "{chunk}"',
+            "",
+            "# Restore the default selector for any user config parsed after this include.",
+            "Device: all",
+            "Channel: all",
+            "",
+        ]
+    )
 
 
 def _include_basename(value: str) -> str:
@@ -436,17 +513,43 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
 class EqualizerApoConfigManager:
     """Registry discovery and the small slice of Equalizer APO config YASB owns."""
 
+    # Include/backup/managed writes and mutable attempt diagnostics form one
+    # transaction, including calls made outside the Qt writer.
+    _write_lock: ClassVar[threading.RLock] = threading.RLock()
+    _revision: ClassVar[int] = 0
+    _states: ClassVar[dict[str, ApoAppliedState]] = {}
+    _listeners: ClassVar[list[Callable[[ApoAppliedState], None]]] = []
+
+    @classmethod
+    def subscribe(cls, callback: Callable[[ApoAppliedState], None]) -> None:
+        cls._listeners.append(callback)
+
+    @classmethod
+    def unsubscribe(cls, callback: Callable[[ApoAppliedState], None]) -> None:
+        cls._listeners.remove(callback)
+
+    @classmethod
+    def applied_for(cls, key: str) -> ApoAppliedState | None:
+        # Immutable snapshots can be read without waiting on file I/O.
+        return cls._states.get(key)
+
     def __init__(self, registry: Any = winreg) -> None:
         self._registry = registry
         self._installation_checked = False
         self._installation: EqualizerApoInstallation | None = None
         self._discovery_status = "unknown"
-        self._parent_checked = False
-        self._include_ready = False
         self._external_filters = False
         self._analysis = ExistingConfigAnalysis(ExistingConfigKind.UNKNOWN, False)
         self._stock_neutralized = False
-        self._last_payload = ""
+
+    def target_key(self) -> str:
+        installation, _status = discover_equalizer_apo_details(self._registry)
+        if installation is not None:
+            try:
+                return os.path.normcase(str((installation.config_path / MANAGED_FILENAME).resolve()))
+            except OSError, RuntimeError, ValueError:
+                pass
+        return f"unresolved:{id(self._registry)}"
 
     @property
     def installation(self) -> EqualizerApoInstallation | None:
@@ -460,6 +563,9 @@ class EqualizerApoConfigManager:
         return self._external_filters
 
     def _prepare_parent(self, manage_include: bool) -> ApoApplyResult | None:
+        self._external_filters = False
+        self._analysis = ExistingConfigAnalysis(ExistingConfigKind.UNKNOWN, False)
+        self._stock_neutralized = False
         installation = self.installation
         if installation is None:
             if self._discovery_status == "missing_install_path":
@@ -480,17 +586,6 @@ class EqualizerApoConfigManager:
         parent = config_path / "config.txt"
         if not parent.is_file():
             return ApoApplyResult("Equalizer APO — setup required", f"Missing {parent}")
-        if self._parent_checked:
-            return (
-                None
-                if self._include_ready
-                else ApoApplyResult(
-                    "Equalizer APO — setup required",
-                    f"Add this line to {parent}: {INCLUDE_LINE}",
-                    external_filters=self._external_filters,
-                )
-            )
-
         try:
             config = read_config_text(parent)
         except PermissionError as error:
@@ -504,7 +599,6 @@ class EqualizerApoConfigManager:
         starts = config.text.count(BEGIN_MARKER)
         ends = config.text.count(END_MARKER)
         marker_valid = starts == 1 and ends == 1 and _MANAGED_BLOCK_RE.search(config.text) is not None
-        self._parent_checked = True
 
         if (starts or ends) and not marker_valid:
             return ApoApplyResult(
@@ -517,7 +611,6 @@ class EqualizerApoConfigManager:
         # With manage_include enabled we may still neutralize the *known stock*
         # sample chain once, after preserving the pre-YASB parent config.
         if marker_valid and (not manage_include or analysis.kind != ExistingConfigKind.STOCK):
-            self._include_ready = True
             return None
 
         if not marker_valid and not manage_include:
@@ -553,7 +646,6 @@ class EqualizerApoConfigManager:
             if include_changed:
                 raise OSError("managed Include verification failed")
 
-            self._include_ready = True
             self._analysis = analyze_existing_config(verified)
             self._external_filters = self._analysis.external_filters
             if self._stock_neutralized:
@@ -576,12 +668,90 @@ class EqualizerApoConfigManager:
         return None
 
     def apply(
-        self, gains: Sequence[float], output: AudioOutputState, apo_options: Any, *, enabled: bool = True
+        self,
+        gains: Sequence[float],
+        output: AudioOutputState,
+        apo_options: Any,
+        *,
+        enabled: bool = True,
+        native: NativeApoRoute | None = None,
+        audio: NativeAudioState = NativeAudioState(),
+        generation: int = 0,
+        restore: bool = False,
     ) -> ApoApplyResult:
+        with self._write_lock:
+            options = ApoWriteOptions.snapshot(apo_options)
+            result = self._apply(
+                gains,
+                output,
+                options,
+                enabled=enabled,
+                native=native,
+                audio=audio,
+                generation=generation,
+                restore=restore,
+            )
+            if result.applied:
+                assert self._installation is not None
+                key = os.path.normcase(str((self._installation.config_path / MANAGED_FILENAME).resolve()))
+                EqualizerApoConfigManager._revision += 1
+                state = ApoAppliedState(
+                    key,
+                    self._revision,
+                    result.native_parameters.gains
+                    if result.native_parameters is not None
+                    else validate_gains(gains)
+                    if enabled
+                    else (0.0,) * len(FREQUENCIES),
+                    output,
+                    options,
+                    NativeAudioState.from_parameters(result.native_parameters)
+                    if result.native_parameters is not None
+                    else audio,
+                )
+                self._states[key] = state
+                result = replace(result, state=state)
+            listeners = tuple(self._listeners)
+        if result.state is not None:
+            for listener in listeners:
+                listener(result.state)
+        return result
+
+    def _apply(
+        self,
+        gains: Sequence[float],
+        output: AudioOutputState,
+        apo_options: ApoWriteOptions,
+        *,
+        enabled: bool = True,
+        native: NativeApoRoute | None = None,
+        audio: NativeAudioState = NativeAudioState(),
+        generation: int = 0,
+        restore: bool = False,
+    ) -> ApoApplyResult:
+        commit: NativeCommit | None = None
+        if apo_options.processor == "native":
+            try:
+                # Validate everything before parent preparation can change files.
+                build_device_selector(output.endpoint_guid)
+                if native is None or native.target != self.target_key() or native.options != apo_options.native:
+                    raise ValueError("Native DSP needs a validated route owned by the shared writer")
+                values = validate_gains(gains) if enabled else (0.0,) * len(FREQUENCIES)
+                parameters = native_parameters(values, audio, apo_options.auto_preamp, apo_options.preamp_db)
+                commit = native.prepare(
+                    parameters, output.endpoint_guid, generation, restore=restore, auto_preamp=apo_options.auto_preamp
+                )
+            except (OSError, ValueError, RuntimeError) as error:
+                return ApoApplyResult("Native DSP unavailable", str(error))
+        elif apo_options.processor != "graphic_eq":
+            return ApoApplyResult("Unknown audio processor", apo_options.processor)
+        # Discovery and parent readiness belong to this attempt, not the lifetime
+        # of a popup/manager. A repaired or externally changed setup must be read.
+        self._installation_checked = False
+        installation = self.installation
         setup = self._prepare_parent(bool(apo_options.manage_include))
         if setup is not None:
             return setup
-        installation = self.installation
         if installation is None:
             return ApoApplyResult("Visual only — Equalizer APO not installed")
         if not output.endpoint_guid:
@@ -591,16 +761,30 @@ class EqualizerApoConfigManager:
                 external_filters=self._external_filters,
             )
         try:
-            payload = render_managed_config(
-                gains,
-                output.endpoint_guid,
-                auto_preamp=bool(apo_options.auto_preamp),
-                preamp_db=float(apo_options.preamp_db),
-                enabled=enabled,
-            )
-            if payload != self._last_payload:
-                atomic_write_text(installation.config_path / MANAGED_FILENAME, payload, "utf-8")
-                self._last_payload = payload
+            if commit is not None:
+                assert native is not None
+                payload = render_native_config(native, commit, output.endpoint_guid)
+            else:
+                payload = render_managed_config(
+                    gains,
+                    output.endpoint_guid,
+                    auto_preamp=bool(apo_options.auto_preamp),
+                    preamp_db=float(apo_options.preamp_db),
+                    enabled=enabled,
+                )
+            target = installation.config_path / MANAGED_FILENAME
+            try:
+                current = target.read_bytes()
+            except FileNotFoundError:
+                current = b""
+            if commit is not None:
+                assert native is not None
+                backup = target.with_suffix(target.suffix + ".yasb-native-backup")
+                if current and not backup.exists():
+                    shutil.copy2(target, backup)
+                native.persist(commit)
+            if payload.encode("utf-8") != current:
+                atomic_write_text(target, payload, "utf-8")
                 logger.debug("Equalizer APO managed EQ updated for %s", output.endpoint_guid)
         except PermissionError as error:
             return ApoApplyResult(
@@ -615,6 +799,16 @@ class EqualizerApoConfigManager:
                 external_filters=self._external_filters,
             )
 
+        if commit is not None:
+            assert native is not None
+            native.publish(commit)
+            return ApoApplyResult(
+                "Saved; native processing unconfirmed",
+                "Settings and route persisted. Resident processing is reported separately.",
+                True,
+                self._external_filters,
+                native_parameters=commit.parameters,
+            )
         if self._stock_neutralized:
             return ApoApplyResult(
                 "Equalizer APO — stock config neutralized",
@@ -655,11 +849,390 @@ class EqualizerApoConfigManager:
         return True
 
 
+@dataclass
+class _ApoTarget:
+    intent: ApoWriteRequest | None = None
+    applied: ApoAppliedState | None = None
+    completed: int = 0
+    failed: bool = False
+    status: str = ""
+    detail: str = ""
+    draft_owner: object | None = None
+
+
+class EqualizerApoWriter(QObject):
+    """Application-owned scheduler with one state owner per canonical file.
+
+    A single executor also serializes distinct targets. There are few tiny config
+    files; retaining one worker is simpler than allocating a pool per popup/file.
+    """
+
+    changed = pyqtSignal(str)
+    redirected = pyqtSignal(str, str)
+    _job_finished = pyqtSignal(object, object)
+    _state_finished = pyqtSignal(object)
+    _shared: ClassVar[EqualizerApoWriter | None] = None
+    _closing: ClassVar[bool] = False
+    _drain_task: ClassVar[asyncio.Task[None] | None] = None
+
+    @classmethod
+    def shared(cls) -> EqualizerApoWriter:
+        if cls._shared is None or (not cls._closing and (not is_valid_qobject(cls._shared) or cls._shared._closed)):
+            cls._shared = cls()
+        return cls._shared
+
+    @classmethod
+    def shared_instance(cls) -> EqualizerApoWriter | None:
+        return cls._shared
+
+    @classmethod
+    async def aclose_shared(cls) -> None:
+        task = cls._drain_task
+        if task is None or task.done():
+            writer = cls._shared
+            if writer is None:
+                return
+            cls._closing = True
+            writer.shutdown()
+            task = asyncio.create_task(cls._drain_shared(writer))
+            cls._drain_task = task
+        await asyncio.shield(task)
+
+    @classmethod
+    async def _drain_shared(cls, writer: EqualizerApoWriter) -> None:
+        await asyncio.to_thread(writer._executor.shutdown, wait=True, cancel_futures=False)
+        writer._running = None
+        if cls._shared is writer:
+            cls._shared = None
+        if cls._drain_task is asyncio.current_task():
+            cls._drain_task = None
+        cls._closing = False
+
+    def __init__(self) -> None:
+        super().__init__(QApplication.instance())
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yasb-equalizer-apo")
+        self._targets: dict[str, _ApoTarget] = {}
+        self._native_routes: dict[str, NativeApoRoute] = {}
+        self._pending: OrderedDict[str, ApoWriteRequest] = OrderedDict()
+        self._running: ApoWriteRequest | None = None
+        self._outputs: dict[DefaultAudioOutputService, Callable[[AudioOutputState], None]] = {}
+        self._generation = 0
+        self._closed = False
+        self._job_finished.connect(self._on_job_finished)
+        self._state_finished.connect(self._on_state)
+        EqualizerApoConfigManager.subscribe(self._post_state)
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def target(self, key: str) -> _ApoTarget:
+        if key not in self._targets:
+            self._targets[key] = _ApoTarget(applied=EqualizerApoConfigManager.applied_for(key))
+        return self._targets[key]
+
+    def _post_state(self, state: ApoAppliedState) -> None:
+        try:
+            self._state_finished.emit(state)
+        except RuntimeError:
+            pass
+
+    def claim_draft(self, key: str, token: object, *, notify: bool = True) -> bool:
+        target = self.target(key)
+        if self._closed or target.draft_owner not in (None, token):
+            return False
+        target.draft_owner = token
+        if notify:
+            self.changed.emit(key)
+        return True
+
+    def release_draft(self, key: str, token: object) -> None:
+        target = self.target(key)
+        if target.draft_owner is token:
+            target.draft_owner = None
+            if not self._closed:
+                self.changed.emit(key)
+
+    def _on_state(self, state: ApoAppliedState) -> None:
+        if self._closed:
+            return
+        target = self.target(state.target)
+        if target.applied is None or state.revision > target.applied.revision:
+            target.applied = state
+            self.changed.emit(state.target)
+
+    def queue(
+        self,
+        key: str,
+        gains: tuple[float, ...],
+        output: DefaultAudioOutputService,
+        manager: EqualizerApoConfigManager,
+        options: ApoWriteOptions,
+        *,
+        draft_target: str | None = None,
+        draft_token: object | None = None,
+        audio: NativeAudioState | None = None,
+        restore: bool = False,
+    ) -> bool:
+        if self._closed:
+            return False
+        for stale, callback in tuple(self._outputs.items()):
+            if type(stale) is not DefaultAudioOutputService or not stale.closed:
+                continue
+            try:
+                stale.default_output_changed.disconnect(callback)
+            except RuntimeError, TypeError:
+                pass
+            self._outputs.pop(stale, None)
+        target = self.target(key)
+        if (draft_target is not None or draft_token is not None) and (
+            draft_target != key or draft_token is None or target.draft_owner is not draft_token
+        ):
+            return False
+        if target.intent is not None and target.intent.restore and not restore:
+            return False  # Restoration is an authoritative-base barrier, not a placeholder intent to edit.
+        owner_options = (
+            target.intent.options
+            if target.intent is not None
+            else target.applied.options
+            if target.applied is not None
+            else None
+        )
+        if owner_options is not None and (owner_options.processor, owner_options.native) != (
+            options.processor,
+            options.native,
+        ):
+            return False
+        # Dynamic processing retains the committed manual curve, but manual
+        # edits cannot alter it until an explicit Audio action disables learning.
+        current_audio = (
+            target.intent.audio
+            if target.intent is not None
+            else target.applied.audio
+            if target.applied is not None
+            else NativeAudioState()
+        )
+        if options.processor == "native" and audio is None and current_audio.adaptive and not restore:
+            return False
+        # Audio actions operate on committed EQ and do not consume its draft lease.
+        if audio is None and target.draft_owner is not None and target.draft_owner is not draft_token:
+            return False
+        if audio is None:
+            audio = (
+                target.intent.audio
+                if target.intent is not None
+                else target.applied.audio
+                if target.applied is not None
+                else NativeAudioState()
+            )
+        else:
+            if options.processor != "native":
+                return False
+            audio.parameters(gains, 0).pack()
+            gains = (
+                target.intent.gains
+                if target.intent is not None
+                else target.applied.gains
+                if target.applied is not None
+                else gains
+            )
+        if output not in self._outputs:
+
+            def changed(state: AudioOutputState) -> None:
+                self._retarget(output, state)
+
+            self._outputs[output] = changed
+            output.default_output_changed.connect(changed)
+        self._generation += 1
+        request = ApoWriteRequest(
+            self._generation, self._generation, gains, output.state, options, manager, key, output, audio, restore
+        )
+        if draft_target is not None:
+            target.draft_owner = None
+        self._enqueue(request)
+        return True
+
+    def _enqueue(self, request: ApoWriteRequest) -> None:
+        target = self.target(request.target)
+        if target.intent is not None and target.intent.intent_revision > request.intent_revision:
+            return  # A notification may have synchronously committed newer intent.
+        request = replace(request, output=request.output_service.state)
+        target.intent = request
+        target.failed = False
+        target.status, target.detail = "Applying…", ""
+        self._pending[request.target] = request
+        self._pending.move_to_end(request.target)
+        self.changed.emit(request.target)
+        self._submit_latest()
+
+    def _retarget(self, output: DefaultAudioOutputService, state: AudioOutputState) -> None:
+        if self._closed:
+            return
+        destinations: dict[str, list[ApoWriteRequest]] = {}
+        for target in tuple(self._targets.values()):
+            request = target.intent
+            if request is not None:
+                destinations.setdefault(request.manager.target_key(), []).append(request)
+        for key, requests in destinations.items():
+            if not any(request.output_service is output and request.output != state for request in requests):
+                continue
+            # Historical installations may now resolve to one file. Keep the
+            # latest explicit intent, not whichever target was inserted last.
+            request = max(requests, key=lambda item: item.intent_revision)
+            target = self.target(key)
+            pending = request.generation > target.completed
+            for old in requests:
+                queued = self._pending.get(old.target)
+                if queued is not None and queued.intent_revision <= request.intent_revision:
+                    self._pending.pop(old.target)
+                if old.target != key:
+                    self.target(old.target).intent = None
+                    self.redirected.emit(old.target, key)
+            request = replace(request, target=key)
+            if target.intent is not None and target.intent.intent_revision > request.intent_revision:
+                continue
+            target.intent = request
+            current_output = state if request.output_service is output else request.output_service.state
+            if pending or request.output != current_output:
+                self._generation += 1
+                self._enqueue(replace(request, generation=self._generation, output=current_output))
+            else:
+                self.changed.emit(key)
+
+    def _submit_latest(self) -> None:
+        if self._closed or self._running is not None or not self._pending:
+            return
+        _key, request = self._pending.popitem(last=False)
+        self._running = request
+        future = self._executor.submit(self._execute, request)
+        future.add_done_callback(lambda done: self._finish_worker(request, done))
+
+    def _execute(self, request: ApoWriteRequest) -> ApoApplyResult:
+        if request.options.processor == "native":
+            if request.options.native is None:
+                return ApoApplyResult("Native DSP unavailable", "Missing native binding options")
+            key = request.manager.target_key()
+            route = self._native_routes.get(key)
+            if route is None:
+                route = NativeApoRoute(key, request.options.native)
+                self._native_routes[key] = route
+            if route.options != request.options.native:
+                return ApoApplyResult(
+                    "Conflicting native route", "The canonical target already belongs to a different profile or DLL"
+                )
+            return request.manager.apply(
+                request.gains,
+                request.output,
+                request.options,
+                native=route,
+                audio=request.audio,
+                generation=request.generation,
+                restore=request.restore,
+            )
+        return request.manager.apply(request.gains, request.output, request.options)
+
+    def observe_native(self, key: str) -> NativeObservation:
+        target = self.target(key)
+        route = self._native_routes.get(key)
+        if self._closed or route is None or target.intent is None:
+            return NativeObservation()
+        return route.observe(target.intent.generation)
+
+    def _retire_native(self, keep: frozenset[str]) -> None:
+        for key in tuple(self._native_routes):
+            if key not in keep:
+                self._native_routes.pop(key).close()
+
+    def _close_native(self) -> None:
+        for route in self._native_routes.values():
+            route.close()
+        self._native_routes.clear()
+
+    def _finish_worker(self, request: ApoWriteRequest, future: Future[ApoApplyResult]) -> None:
+        try:
+            result = future.result()
+        except Exception as error:
+            logger.exception("Equalizer APO update failed")
+            result = ApoApplyResult("Equalizer APO — write failed", str(error))
+        try:
+            self._job_finished.emit(request, result)
+        except RuntimeError:
+            pass
+
+    def _on_job_finished(self, request: ApoWriteRequest, result: ApoApplyResult) -> None:
+        self._running = None
+        if self._closed:
+            return
+        key = request.target
+        repair: ApoWriteRequest | None = None
+        if result.state is not None:
+            self._on_state(result.state)
+            if result.state.target != key:
+                old = self.target(key)
+                new = self.target(result.state.target)
+                if old.intent is not None and old.intent.generation == request.generation:
+                    old.intent = None
+                    if new.intent is None or new.intent.intent_revision < request.intent_revision:
+                        new.intent = replace(request, target=result.state.target)
+                if new.intent is not None and new.intent.intent_revision > request.intent_revision:
+                    # Discovery may move an in-flight older intent onto a file
+                    # whose newer explicit intent already finished. Restore it.
+                    repair = new.intent
+                self.redirected.emit(key, result.state.target)
+                key = result.state.target
+        target = self.target(key)
+        if (
+            request.restore
+            and result.state is not None
+            and target.intent is not None
+            and target.intent.generation == request.generation
+        ):
+            target.intent = replace(target.intent, gains=result.state.gains, audio=result.state.audio, restore=False)
+        target.completed = max(target.completed, request.generation)
+        if target.intent is not None and target.intent.generation == request.generation:
+            target.failed = not result.applied
+            target.status, target.detail = result.status, result.detail
+        self.changed.emit(key)
+        if repair is not None:
+            self._generation += 1
+            self._enqueue(replace(repair, generation=self._generation, output=repair.output_service.state))
+        if self._native_routes:
+            keep = frozenset(
+                key
+                for key, value in self._targets.items()
+                if value.intent is not None and value.intent.options.processor == "native"
+            )
+            self._executor.submit(self._retire_native, keep)
+        self._submit_latest()
+
+    def shutdown(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._pending.clear()
+        EqualizerApoConfigManager.unsubscribe(self._post_state)
+        for output, callback in self._outputs.items():
+            try:
+                output.default_output_changed.disconnect(callback)
+            except RuntimeError, TypeError:
+                pass
+        self._outputs.clear()
+        self._executor.submit(self._close_native)
+        self._executor.shutdown(wait=False, cancel_futures=False)
+        for key in tuple(self._targets):
+            self.changed.emit(key)
+
+
 class EqualizerApoController(QObject):
-    """Qt-facing serialized/coalescing controller for autosaved EQ writes."""
+    """A view's editing state and lease on the application's shared APO writer."""
 
     status_changed = pyqtSignal(str, str)
-    _job_finished = pyqtSignal(object, object)
+    committed_changed = pyqtSignal(object)
+    applied_changed = pyqtSignal(object)
+    draft_changed = pyqtSignal()
 
     def __init__(
         self,
@@ -676,7 +1249,6 @@ class EqualizerApoController(QObject):
             "apo",
             SimpleNamespace(
                 enabled=False,
-                target_device="default",
                 auto_preamp=True,
                 preamp_db=0.0,
                 write_debounce_ms=100,
@@ -684,30 +1256,30 @@ class EqualizerApoController(QObject):
             ),
         )
         self.enabled = getattr(options, "backend", "visual") == "equalizer_apo" and bool(self.apo_options.enabled)
-        self._manager = manager or EqualizerApoConfigManager()
+        self._native_profile: str | None = None
+        if self.enabled and getattr(self.apo_options, "processor", "graphic_eq") == "native":
+            from core.config import get_config_dir
+
+            self._native_profile = canonical(get_config_dir())
+        self._manager: EqualizerApoConfigManager = manager or EqualizerApoConfigManager()
         self._output = output_service or DefaultAudioOutputService.instance()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yasb-equalizer-apo")
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(int(self.apo_options.write_debounce_ms))
-        self._timer.timeout.connect(self.flush)
-        self._job_finished.connect(self._on_job_finished)
-        self._generation = 0
-        self._running = False
-        self._latest_request: ApoWriteRequest | None = None
-        self._inflight_request: ApoWriteRequest | None = None
+        self._ensure_output_service()
+        self._writer = EqualizerApoWriter.shared() if self.enabled else None
+        self._target = ""
         self._editing_gains = (0.0,) * len(FREQUENCIES)
-        self._applied_gains: tuple[float, ...] | None = None
+        self._applied: ApoAppliedState | None = None
+        self._dirty = False
+        self._draft_token = object()
+        self._draft_target: str | None = None
+        self._draft_writer: EqualizerApoWriter | None = None
+        self._draft_base: ApoAppliedState | None = None
+        self._visual_committed = self._editing_gains
         self._write_failed = False
         self._closed = False
-        self._connected = False
-        if self.enabled:
-            self._output.default_output_changed.connect(self._on_output_changed)
-            self._connected = True
+        if self._writer is not None and is_valid_qobject(self._writer) and not self._writer.closed:
+            self._writer.changed.connect(self._on_owner_changed)
+            self._writer.redirected.connect(self._redirected)
             self._output.request_refresh()
-        app = QApplication.instance()
-        if app is not None:
-            app.aboutToQuit.connect(self.shutdown)
 
     @property
     def gains(self) -> tuple[float, ...]:
@@ -719,105 +1291,547 @@ class EqualizerApoController(QObject):
 
     @property
     def applied_gains(self) -> tuple[float, ...] | None:
-        return self._applied_gains
+        return self._applied.gains if self._applied is not None else None
+
+    @property
+    def applied_state(self) -> ApoAppliedState | None:
+        return self._applied
 
     @property
     def pending(self) -> bool:
-        return self.enabled and (self._write_failed or self._applied_gains != self._editing_gains)
+        writer = self._ensure_writer()
+        if writer is None:
+            return self._dirty
+        target = writer.target(self._target)
+        intent, applied = target.intent, target.applied
+        same_values = False
+        if intent is not None and applied is not None:
+            if intent.options.processor == "native":
+                # Compare the actual float32 protocol values, including Audio.
+                # Python float64 intent must match the same settings decoded
+                # from the persisted float32 protocol. This is not a DSP ACK.
+                try:
+                    wanted = native_parameters(
+                        intent.gains, intent.audio, intent.options.auto_preamp, intent.options.preamp_db
+                    )
+                    saved = native_parameters(
+                        applied.gains, applied.audio, applied.options.auto_preamp, applied.options.preamp_db
+                    )
+                    same_values = wanted.pack()[16:] == saved.pack()[16:]
+                except ValueError:
+                    pass
+            else:
+                same_values = intent.gains == applied.gains
+        return (
+            self._dirty
+            or target.failed
+            or bool(
+                intent
+                and (
+                    intent.generation > target.completed
+                    or applied is None
+                    or not same_values
+                    or (intent.output, intent.options) != (applied.output, applied.options)
+                )
+            )
+        )
 
     @property
     def write_failed(self) -> bool:
         return self._write_failed
 
-    def start(self, gains: Sequence[float]) -> None:
-        self.apply_preset(gains)
+    @property
+    def has_draft(self) -> bool:
+        return self._dirty
 
-    def apply_preset(self, gains: Sequence[float]) -> None:
-        self._editing_gains = validate_gains(gains)
-        self._timer.stop()
-        self._write_failed = False
-        if self.enabled:
-            self._queue_write(self._editing_gains)
+    @property
+    def draft_identity(self) -> object | None:
+        return self._draft_token if self._dirty else None
 
-    def update_custom(self, gains: Sequence[float], *, final: bool = False) -> None:
-        self._editing_gains = validate_gains(gains)
-        if not self.enabled:
+    @property
+    def writer_available(self) -> bool:
+        return not self.enabled or self._ensure_writer() is not None
+
+    @property
+    def draft_available(self) -> bool:
+        writer = self._ensure_writer()
+        if writer is None:
+            return not self.enabled
+        target = writer.target(self._target)
+        requested = ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile)
+        owner = (
+            target.intent.options
+            if target.intent is not None
+            else target.applied.options
+            if target.applied is not None
+            else None
+        )
+        return target.draft_owner in (None, self._draft_token) and (
+            owner is None or (owner.processor, owner.native) == (requested.processor, requested.native)
+        )
+
+    @staticmethod
+    def _settled_base(target: _ApoTarget) -> ApoAppliedState | None:
+        applied, intent = target.applied, target.intent
+        if applied is None or target.failed:
+            return None
+        if intent is not None and (
+            intent.generation > target.completed
+            or (intent.gains, intent.options, intent.output, intent.audio)
+            != (applied.gains, applied.options, applied.output, applied.audio)
+        ):
+            return None
+        return applied
+
+    @property
+    def draft_needs_review(self) -> bool:
+        writer = self._ensure_writer()
+        key = self._draft_target
+        if writer is None or key is None or key != self._manager.target_key():
+            return False
+        target = writer.target(key)
+        if writer is self._draft_writer and target.draft_owner is self._draft_token:
+            return False
+        base = self._draft_base
+        return base is None or self._settled_base(target) != base or EqualizerApoConfigManager.applied_for(key) != base
+
+    def _ensure_output_service(self) -> None:
+        if type(self._output) is DefaultAudioOutputService and (
+            not is_valid_qobject(self._output) or self._output.closed
+        ):
+            self._output = DefaultAudioOutputService.instance()
+
+    def _disconnect_writer(self, writer: EqualizerApoWriter) -> None:
+        if not is_valid_qobject(writer):
             return
-        self._write_failed = False
-        if final:
-            self._timer.stop()
-            self._queue_write(self._editing_gains)
+        try:
+            writer.changed.disconnect(self._on_owner_changed)
+            writer.redirected.disconnect(self._redirected)
+        except RuntimeError, TypeError:
+            pass
+
+    def _ensure_writer(self) -> EqualizerApoWriter | None:
+        if not self.enabled or self._closed:
+            return None
+        writer = self._writer
+        shared = EqualizerApoWriter.shared_instance()
+        if writer is not None and writer is shared and is_valid_qobject(writer) and not writer.closed:
+            return writer
+        if writer is not None:
+            self._disconnect_writer(writer)
+        if shared is None or not is_valid_qobject(shared) or shared.closed:
+            self._writer = None
+            return None
+        self._writer = shared
+        shared.changed.connect(self._on_owner_changed)
+        shared.redirected.connect(self._redirected)
+        return shared
+
+    def reconnect_writer(self) -> None:
+        if self._closed or not self.enabled:
+            return
+        EqualizerApoWriter.shared()
+        if self._ensure_writer() is None:
+            self.status_changed.emit("Equalizer APO writer unavailable", "Retry when the current writer has drained.")
+        elif self._dirty:
+            self.status_changed.emit("", "")
         else:
-            self._timer.start()
+            self._on_owner_changed(self._target, force=True)
+        self.draft_changed.emit()
+
+    def review_custom(self) -> None:
+        if self.draft_needs_review:
+            self.discard_custom()
+            self.status_changed.emit("Review the current curve", "Edit again to create a fresh draft.")
+
+    def _bind(self) -> None:
+        self._ensure_output_service()
+        self._target = self._manager.target_key()
+
+    def _authorize_destination(self) -> bool:
+        key = self._manager.target_key()
+        writer = self._ensure_writer()
+        if self.enabled and writer is None:
+            return False
+        if writer is not None:
+            target = writer.target(key)
+            owner = (
+                target.intent.options
+                if target.intent is not None
+                else target.applied.options
+                if target.applied is not None
+                else None
+            )
+            requested = ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile)
+            if owner is not None and (owner.processor, owner.native) != (requested.processor, requested.native):
+                return False
+            current_audio = (
+                target.intent.audio
+                if target.intent is not None
+                else target.applied.audio
+                if target.applied is not None
+                else NativeAudioState()
+            )
+            if (
+                target.draft_owner not in (None, self._draft_token)
+                or (target.intent is not None and target.intent.restore)
+                or self._requires_restore(target)
+                or (requested.processor == "native" and current_audio.adaptive)
+            ):
+                return False
+        self._target = key
+        return True
+
+    def start(self, gains: Sequence[float]) -> None:
+        if self._closed:
+            return
+        self._visual_committed = validate_gains(gains)
+        self._bind()
+        writer = self._ensure_writer()
+        if writer is not None:
+            target = writer.target(self._target)
+            current_options = (
+                target.intent.options
+                if target.intent is not None
+                else target.applied.options
+                if target.applied is not None
+                else None
+            )
+            requested = ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile)
+            if current_options is not None and (current_options.processor, current_options.native) != (
+                requested.processor,
+                requested.native,
+            ):
+                self.status_changed.emit(
+                    "Conflicting audio processor",
+                    "This canonical configuration target already has a different processor/profile owner.",
+                )
+                return
+        if writer is not None and writer.target(self._target).intent is not None:
+            self._on_owner_changed(self._target, force=True)
+        elif writer is not None and (applied := writer.target(self._target).applied) is not None:
+            self._editing_gains = applied.gains
+            writer.queue(self._target, applied.gains, self._output, self._manager, applied.options)
+            self._on_owner_changed(self._target, force=True)
+        else:
+            if writer is not None and getattr(self.apo_options, "processor", "graphic_eq") == "native":
+                self._editing_gains = validate_gains(gains)
+                self._queue_write(restore=True)
+            else:
+                self.apply_preset(gains)
+            if writer is not None:
+                self._on_owner_changed(self._target, force=True)
+
+    def apply_preset(self, gains: Sequence[float]) -> bool:
+        if self._closed or not self._authorize_destination():
+            return False
+        values = validate_gains(gains)
+        if self.enabled:
+            if self.draft_needs_review or not self._admit_draft() or not self._queue_write(gains=values):
+                return False
+        else:
+            self._editing_gains = self._visual_committed = values
+            self._dirty = False
+            self.committed_changed.emit(values)
+        self.draft_changed.emit()
+        return True
+
+    def update_custom(
+        self, gains: Sequence[float], *, final: bool = False, expected_draft: object | None = None
+    ) -> bool:
+        """Edit only a draft, including slider release; final no longer writes."""
+        accepted, _identity = self.edit_custom(gains, expected_draft=expected_draft)
+        return accepted
+
+    def edit_custom(
+        self, gains: Sequence[float], *, expected_draft: object | None = None
+    ) -> tuple[bool, object | None]:
+        """Return the lease of this edit even if a synchronous observer replaces it."""
+        if self._closed or not self._authorize_destination():
+            return False, None
+        writer = self._ensure_writer()
+        if expected_draft is not None and (
+            self.draft_identity is not expected_draft
+            or self.enabled
+            and (
+                writer is None
+                or self._draft_writer is not writer
+                or self._draft_target != self._target
+                or writer.target(self._target).draft_owner is not expected_draft
+            )
+        ):
+            return False, None
+        if self._draft_target is not None and self._draft_target != self._target:
+            self.discard_custom()
+            return False, None
+        if not self._admit_draft(notify=True):
+            return False, None
+        values = validate_gains(gains)
+        target = writer.target(self._target) if writer is not None else None
+        baseline = self._committed_gains(target)
+        if values == baseline:
+            self.discard_custom()
+            return True, None
+        if not self._dirty:
+            self._draft_token = object()
+        self._editing_gains = values
+        self._dirty = True
+        identity = self._draft_token
+        if writer is not None:
+            if self._draft_target is None:
+                self._draft_base = self._settled_base(writer.target(self._target))
+                self._draft_target = self._target
+                self._draft_writer = writer
+                writer.claim_draft(self._target, identity)
+        self.draft_changed.emit()
+        return True, identity
 
     def flush(self) -> None:
-        if self.enabled and not self._closed:
-            self._queue_write(self._editing_gains)
+        """Explicit commit alias; no timer or release event calls this method."""
+        self.apply_custom()
 
-    def _on_output_changed(self, _state: AudioOutputState) -> None:
-        if not self.enabled or self._closed:
-            return
-        # Autosave-only semantics: the visible curve is always the intended
-        # curve, so a default-output change retargets that exact state.
-        self._queue_write(self._editing_gains)
-
-    def _queue_write(self, gains: Sequence[float]) -> None:
+    def apply_custom(self) -> bool:
         if self._closed:
+            return False
+        self._ensure_output_service()
+        writer = self._ensure_writer()
+        if self.enabled and writer is None:
+            self.status_changed.emit("Equalizer APO writer unavailable", "Reconnect before applying this curve.")
+            return False
+        if writer is not None and not self._dirty:
+            key = self._manager.target_key()
+            target = writer.target(key)
+            if target.intent is not None and target.intent.restore:
+                requested = ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile)
+                owner = target.intent.options
+                if target.intent.generation > target.completed or (owner.processor, owner.native) != (
+                    requested.processor,
+                    requested.native,
+                ):
+                    return False
+                # Retry a failed startup restoration without converting its
+                # placeholder UI curve into a new committed setting.
+                return writer.queue(
+                    target.intent.target,
+                    target.intent.gains,
+                    self._output,
+                    self._manager,
+                    target.intent.options,
+                    restore=True,
+                )
+            if self._requires_restore(target):
+                self._target = key
+                return self._queue_write(gains=self._visual_committed, restore=True)
+        if writer is not None and self._draft_target is not None:
+            if self._manager.target_key() != self._draft_target:
+                self.discard_custom()
+                self._bind()
+                self._on_owner_changed(self._target, force=True)
+                self.status_changed.emit("Output configuration changed", "Review the curve before applying again.")
+                return False
+        if not self._authorize_destination():
+            return False
+        if writer is not None:
+            if self._dirty:
+                if not self._admit_draft() or not self._queue_write():
+                    self.draft_changed.emit()
+                    return False
+            else:
+                target = writer.target(self._target)
+                if not target.failed or target.intent is None or not self._queue_write(gains=target.intent.gains):
+                    return False
+        else:
+            self._dirty = False
+            self._visual_committed = self._editing_gains
+            self.committed_changed.emit(self._editing_gains)
+        self.draft_changed.emit()
+        return True
+
+    def _admit_draft(self, *, notify: bool = False) -> bool:
+        key = self._draft_target
+        if key is None:
+            return not self._dirty or not self.enabled
+        writer = self._ensure_writer()
+        if writer is None or key != self._target:
+            return False
+        if writer is self._draft_writer and writer.target(key).draft_owner is self._draft_token:
+            return True
+        if self.draft_needs_review or writer.target(key).draft_owner is not None:
+            return False
+        self._draft_writer = writer
+        token = self._draft_token = object()
+        # Apply/preset will publish the lease change alongside the queued intent.
+        return (
+            writer.claim_draft(key, token, notify=notify) and self._draft_token is token and self._draft_target == key
+        )
+
+    def _release_draft(self) -> None:
+        writer, self._draft_writer = self._draft_writer, None
+        self._draft_base = None
+        if self._draft_target is not None:
+            key, self._draft_target = self._draft_target, None
+            if writer is not None and is_valid_qobject(writer) and not writer.closed:
+                writer.release_draft(key, self._draft_token)
+
+    def discard_custom(self) -> None:
+        self._dirty = False
+        writer = self._ensure_writer()
+        self._release_draft()
+        target = writer.target(self._target) if writer is not None else None
+        if target is not None and (target.intent is not None or target.applied is not None):
+            self._on_owner_changed(self._target, force=True)
+        else:
+            self._editing_gains = self._applied.gains if self._applied is not None else self._visual_committed
+            self.committed_changed.emit(self._editing_gains)
+        self.draft_changed.emit()
+
+    def _queue_write(self, *, gains: tuple[float, ...] | None = None, restore: bool = False) -> bool:
+        writer = self._ensure_writer()
+        if writer is None or (self._draft_target is not None and self._draft_writer is not writer):
+            return False
+        self._ensure_output_service()
+        # Queue notifications can synchronously start a new draft on the new intent.
+        old_gains, old_dirty = self._editing_gains, self._dirty
+        old_writer, self._draft_writer = self._draft_writer, None
+        old_base, self._draft_base = self._draft_base, None
+        old_target, self._draft_target = self._draft_target, None
+        self._editing_gains = gains if gains is not None else old_gains
+        self._dirty = False
+        accepted = writer.queue(
+            self._target,
+            self._editing_gains,
+            self._output,
+            self._manager,
+            ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile),
+            draft_target=old_target,
+            draft_token=self._draft_token if old_target is not None else None,
+            restore=restore,
+        )
+        if not accepted:
+            self._editing_gains, self._dirty = old_gains, old_dirty
+            self._draft_writer, self._draft_base = old_writer, old_base
+            self._draft_target = old_target
+        return accepted
+
+    @property
+    def restore_required(self) -> bool:
+        writer = self._ensure_writer()
+        return writer is not None and self._requires_restore(writer.target(self._manager.target_key()))
+
+    def _requires_restore(self, target: _ApoTarget) -> bool:
+        return self._native_profile is not None and target.intent is None and target.applied is None
+
+    @property
+    def restoring(self) -> bool:
+        writer = self._ensure_writer()
+        if writer is None:
+            return False
+        intent = writer.target(self._target).intent
+        return bool(intent is not None and intent.restore)
+
+    @property
+    def persistence_pending(self) -> bool:
+        writer = self._ensure_writer()
+        if writer is None:
+            return False
+        target = writer.target(self._target)
+        return bool(target.intent is not None and target.intent.generation > target.completed)
+
+    @property
+    def audio_available(self) -> bool:
+        writer = self._ensure_writer()
+        if writer is None or self._closed or self.restoring:
+            return False
+        target = writer.target(self._target)
+        options = ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile)
+        return bool(
+            target.intent is not None
+            and options.processor == "native"
+            and (options.processor, options.native) == (target.intent.options.processor, target.intent.options.native)
+        )
+
+    @property
+    def output_state(self) -> AudioOutputState:
+        self._ensure_output_service()
+        return self._output.state
+
+    @property
+    def audio_state(self) -> NativeAudioState:
+        writer = self._ensure_writer()
+        if writer is not None:
+            target = writer.target(self._target)
+            if target.intent is not None:
+                return target.intent.audio
+            if target.applied is not None:
+                return target.applied.audio
+        return NativeAudioState()
+
+    @property
+    def native_observation(self) -> NativeObservation:
+        writer = self._ensure_writer()
+        return writer.observe_native(self._target) if writer is not None else NativeObservation()
+
+    def update_audio(self, **changes: Any) -> bool:
+        writer = self._ensure_writer()
+        if self._closed or writer is None:
+            return False
+        self._ensure_output_service()
+        key = self._manager.target_key()
+        options = ApoWriteOptions.snapshot(self.apo_options, native_profile=self._native_profile)
+        if options.processor != "native":
+            return False
+        if key != self._target:
+            self.discard_custom()
+            self._target = key
+            self._on_owner_changed(key, force=True)
+        target = writer.target(key)
+        if target.intent is not None:
+            gains, baseline = target.intent.gains, target.intent.audio
+        elif target.applied is not None:
+            gains, baseline = target.applied.gains, target.applied.audio
+        else:
+            return False  # The destination must acquire/restore a committed base first.
+        audio = replace(baseline, **changes)
+        return writer.queue(key, gains, self._output, self._manager, options, audio=audio)
+
+    def _redirected(self, old: str, new: str) -> None:
+        if self._target == old:
+            self._target = new
+            if self._draft_target == old:
+                self._dirty = False
+                self._release_draft()
+            self._on_owner_changed(new, force=True)
+
+    def _on_owner_changed(self, key: str, *, force: bool = False) -> None:
+        writer = self._ensure_writer()
+        if self._closed or key != self._target:
             return
-        values = validate_gains(gains)
-        self._generation += 1
-        self._latest_request = ApoWriteRequest(self._generation, values, self._output.state)
-        if not self._running:
-            self._submit_latest()
-
-    def _submit_latest(self) -> None:
-        request = self._latest_request
-        if request is None or self._closed:
+        if writer is None:
+            self.draft_changed.emit()
             return
-        self._running = True
-        self._inflight_request = request
-        future = self._executor.submit(self._manager.apply, request.gains, request.output, self.apo_options)
-        future.add_done_callback(lambda result, request=request: self._finish_worker(request, result))
+        target = writer.target(key)
+        if target.intent is not None and target.intent.audio.adaptive and self._dirty:
+            self._dirty = False
+            self._release_draft()
+        if target.applied != self._applied:
+            self._applied = target.applied
+            self.applied_changed.emit(self._applied)
+        if not self._dirty and (target.intent is not None or target.applied is not None):
+            gains = self._committed_gains(target)
+            if force or gains != self._editing_gains:
+                self._editing_gains = gains
+                self.committed_changed.emit(gains)
+        self._write_failed = target.failed
+        self.status_changed.emit(target.status, target.detail)
+        self.draft_changed.emit()
 
-    def _finish_worker(self, request: ApoWriteRequest, future: Any) -> None:
-        try:
-            result = future.result()
-        except Exception as error:
-            logger.exception("Equalizer APO update failed")
-            result = ApoApplyResult("Equalizer APO — write failed", str(error))
-        try:
-            self._job_finished.emit(request, result)
-        except RuntimeError:
-            pass
-
-    def _on_job_finished(self, request: ApoWriteRequest, result: ApoApplyResult) -> None:
-        self._running = False
-        self._inflight_request = None
-        if self._closed:
-            return
-
-        relevant = request.generation == self._generation and request.gains == self._editing_gains
-        if result.applied:
-            self._applied_gains = request.gains
-            if relevant:
-                self._write_failed = False
-        elif relevant:
-            # Keep the visible Custom curve. A later slider movement, preset,
-            # or output change retries naturally through the same autosave path.
-            self._write_failed = True
-
-        if relevant:
-            self._emit_status(result.status, result.detail)
-
-        latest = self._latest_request
-        if latest is not None and latest.generation > request.generation:
-            self._submit_latest()
-
-    def _emit_status(self, status: str, detail: str) -> None:
-        try:
-            self.status_changed.emit(status, detail)
-        except RuntimeError:
-            pass
+    def _committed_gains(self, target: _ApoTarget | None) -> tuple[float, ...]:
+        if target is not None:
+            if target.intent is not None:
+                return target.intent.gains
+            if target.applied is not None:
+                return target.applied.gains
+        return self._visual_committed
 
     def open_configurator(self) -> bool:
         try:
@@ -830,12 +1844,11 @@ class EqualizerApoController(QObject):
         if self._closed:
             return
         self._closed = True
-        self._timer.stop()
-        if self._connected:
+        writer = self._writer
+        self._release_draft()
+        if writer is not None and is_valid_qobject(writer):
             try:
-                self._output.default_output_changed.disconnect(self._on_output_changed)
+                writer.changed.disconnect(self._on_owner_changed)
+                writer.redirected.disconnect(self._redirected)
             except RuntimeError, TypeError:
                 pass
-            self._connected = False
-        self._latest_request = None
-        self._executor.shutdown(wait=False, cancel_futures=True)

@@ -10,6 +10,7 @@ from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, pyqtSlot
 from PyQt6.QtGui import QBrush, QColor, QHideEvent, QLinearGradient, QResizeEvent, QShowEvent
 from PyQt6.QtWidgets import QWIDGETSIZE_MAX, QGraphicsOpacityEffect, QGridLayout, QLabel
 
+from core.utils.qobject import is_valid_qobject
 from core.utils.utilities import ScrollingLabel
 from core.validation.widgets.yasb.audio_visualizer import AudioVisualizerConfig
 from core.widgets.base import BaseWidget
@@ -374,10 +375,32 @@ class AudioVisualizerWidget(BaseWidget):
         self._media.state_changed.connect(self._refresh_label)
         self._refresh_label()
 
+    def _ensure_media(self) -> MediaBackend | None:
+        media = self._media
+        if media is None:
+            return None
+        if is_valid_qobject(media) and not media.closed:
+            return media
+        if is_valid_qobject(media):
+            try:
+                media.state_changed.disconnect(self._refresh_label)
+            except RuntimeError, TypeError:
+                pass
+        shared = MediaBackend.shared_instance()
+        if shared is None or shared is media:
+            return media
+        media = MediaBackend.shared()
+        self._media = media
+        media.state_changed.connect(self._refresh_label)
+        self._media_key = None
+        self._refresh_label(media.state)
+        return media
+
     def _refresh_label(self, _state: MediaState | None = None) -> None:
-        if self._label is None or self._media is None:
+        media = self._ensure_media()
+        if self._label is None or media is None:
             return
-        session = self._media.state.active
+        session = media.state.active
         key = (session.session_id, session.title, session.artist) if session else None
         if key == self._media_key:
             return

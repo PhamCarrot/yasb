@@ -424,10 +424,6 @@ Example: "Windows Media" becomes "windows-media" */
     background-color: #ff0000;
     color: #ffffff;
 }
-.media-menu .source.youtube-music {
-    background-color: #c51f1f;
-    color: #ffffff;
-}
 .media-menu .source.zen {
     background-color: #2ecc71;
     color: #000000;

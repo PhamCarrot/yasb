@@ -93,7 +93,7 @@ class KomorebiEventListener(QThread):
                 while self._app_running and pipe is not None:
                     ok, _, bytes_to_read = PeekNamedPipe(pipe)
                     if ok and not bytes_to_read:
-                        if self._stop_event.wait(0.05):
+                        if self._stop_event.wait(0.005):
                             break
                         continue
 

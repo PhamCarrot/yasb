@@ -3,6 +3,7 @@ import logging
 import os
 from collections.abc import Callable
 from enum import StrEnum
+from functools import partial
 from typing import Any, Literal, cast
 
 import PyQt6.QtCore as QtCore
@@ -22,8 +23,8 @@ from PyQt6.QtWidgets import (
     QSlider,
     QVBoxLayout,
 )
-from qasync import asyncSlot  # type: ignore
 
+from core.utils.qobject import is_valid_qobject
 from core.utils.utilities import (
     PopupWidget,
     ScrollingLabel,
@@ -184,6 +185,8 @@ class MediaWidget(BaseWidget):
         # Currently active session
         self.all_sessions: dict[str, SessionState] = {}
         self.current_session: SessionState | None = None
+        self._seek_identity: tuple[QSlider, str, int, float] | None = None
+        self._seeking = False
         # Initialize tracking variables
         self.app_volume_slider = None
         self._app_mute_button = None
@@ -197,6 +200,20 @@ class MediaWidget(BaseWidget):
         old_session = self.current_session
         self.current_session = next((s for s in data.values() if s.is_current), None)
 
+        session = self.current_session
+        if (
+            not session
+            or not session.is_seekable
+            or (
+                self._seek_identity is not None
+                and self._seek_identity[1:3] != (session.session_id, session.seek_revision)
+            )
+        ):
+            self._cancel_seek()
+        slider = getattr(self, "_progress_slider", None)
+        if is_valid_qobject(slider):
+            slider.setEnabled(bool(session and session.is_seekable))
+
         self._update_interpolated_position()
 
         # If the session has changed, trigger property/playback updates to sync UI
@@ -208,6 +225,7 @@ class MediaWidget(BaseWidget):
         self.show_menu()
 
     def show_menu(self):
+        self._cancel_seek()
         self.dialog = PopupWidget(
             self,
             self.config.media_menu.blur,
@@ -433,8 +451,9 @@ class MediaWidget(BaseWidget):
             self._progress_slider.setValue(0)
 
         # Connect slider events
-        self._progress_slider.sliderPressed.connect(self._on_slider_pressed)
-        self._progress_slider.sliderReleased.connect(self._on_slider_released)
+        self._progress_slider.setEnabled(bool(self.current_session and self.current_session.is_seekable))
+        self._progress_slider.sliderPressed.connect(partial(self._on_slider_pressed, self._progress_slider))
+        self._progress_slider.sliderReleased.connect(partial(self._on_slider_released, self._progress_slider))
         self._progress_slider.valueChanged.connect(self._on_slider_value_changed)
 
         # Initialize seeking flag
@@ -1008,26 +1027,50 @@ class MediaWidget(BaseWidget):
         elif a0.angleDelta().y() < 0:
             self.media.switch_current_session(-1)  # Prev
 
-    def _on_slider_pressed(self):
-        # User started dragging, stop automatic updates
-        self._seeking = True
-
-    @asyncSlot()
-    async def _on_slider_released(self):
-        # User finished dragging, perform seek operation
-        if self._progress_slider is None:
-            return
-        value = self._progress_slider.value()
-        if self.current_session and self.current_session.duration > 0:
-            # Convert percentage to seconds
-            position = (value / 1000.0) * self.current_session.duration
-            try:
-                # Seek to the position
-                await self.media.seek_to_position(position)
-            except Exception as e:
-                logger.error("Error seeking to position: %s", e)
-        # Resume automatic updates
+    def _cancel_seek(self):
+        gesture, self._seek_identity = self._seek_identity, None
         self._seeking = False
+        if gesture is not None and is_valid_qobject(gesture[0]):
+            gesture[0].setSliderDown(False)
+
+    def _on_slider_pressed(self, slider: QSlider):
+        if slider is not self._progress_slider or not is_valid_qobject(slider):
+            return
+        self._cancel_seek()
+        session = self.current_session
+        dialog = getattr(self, "dialog", None)
+        if (
+            session
+            and session.is_seekable
+            and session.seek_revision is not None
+            and is_valid_qobject(dialog)
+            and dialog.isVisible()
+            and not dialog._is_closing
+            and slider is self._progress_slider
+        ):
+            self._seek_identity = (slider, session.session_id, session.seek_revision, session.duration)
+            self._seeking = True
+
+    def _on_slider_released(self, slider: QSlider):
+        gesture = self._seek_identity
+        if gesture is None or gesture[0] is not slider:
+            return
+        self._seek_identity = None
+        self._seeking = False
+        session = self.current_session
+        dialog = getattr(self, "dialog", None)
+        if (
+            session
+            and session.is_seekable
+            and gesture[1:3] == (session.session_id, session.seek_revision)
+            and is_valid_qobject(slider)
+            and slider is self._progress_slider
+            and is_valid_qobject(dialog)
+            and dialog.isVisible()
+            and not dialog._is_closing
+        ):
+            position = (slider.value() / 1000.0) * gesture[3]
+            self.media.seek_to_position(position, expected_revision=gesture[2])
 
     def _on_slider_value_changed(self, value: int):
         # Only process value changes from user interaction
@@ -1253,6 +1296,8 @@ class WheelEventFilter(QObject):
         self.media_widget = parent
 
     def eventFilter(self, obj: QObject, event: QEvent):  # pyright: ignore[reportIncompatibleMethodOverride]
+        if event.type() == QEvent.Type.Hide and obj is self.media_widget.dialog:
+            self.media_widget._cancel_seek()  # pyright: ignore[reportPrivateUsage]
         if event.type() == QEvent.Type.Wheel:
             event = cast(QWheelEvent, event)
             dialog = self.media_widget.dialog

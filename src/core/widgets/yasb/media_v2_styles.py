@@ -1,10 +1,120 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
-from core.validation.widgets.yasb.media_v2 import MediaV2Config
+from pydantic import ValidationError
+
+from core.validation.widgets.yasb.media_v2 import MediaLyricsConfig, MediaV2Config
 
 """Built-in Media V2 QSS using normal YASB class hierarchy and Qt states."""
+
+
+def media_section_key(scale: float, radius: int) -> str:
+    return f"{scale:g}-{radius}"
+
+
+def media_section_fallbacks(widgets: Mapping[str, str | dict[str, Any]]) -> str:
+    metrics: dict[tuple[float, int], MediaLyricsConfig] = {}
+    for widget in widgets.values():
+        if not isinstance(widget, dict) or widget.get("type") != "yasb.media_v2.MediaWidgetV2":
+            continue
+        try:
+            config = MediaV2Config.model_validate(widget.get("options", {}))
+        except ValidationError:
+            continue  # WidgetBuilder owns reporting invalid widgets.
+        if not config.use_default_styles and config.popup.show_equalizer:
+            metrics.setdefault((config.scale, round(config.border_radius * config.scale)), config.popup.lyrics)
+    return "".join(
+        media_section_styles(
+            scale,
+            radius,
+            scoped=True,
+            lyrics=lyrics,
+        )
+        for (scale, radius), lyrics in sorted(metrics.items())
+    )
+
+
+def media_section_styles(
+    scale: float, radius: int, *, scoped: bool = False, lyrics: MediaLyricsConfig | None = None
+) -> str:
+    """Defaults for the lower popup controls at the application stylesheet level."""
+    s: Callable[[float], int] = lambda value: round(value * scale)
+    lyrics = lyrics or MediaLyricsConfig()
+    inactive = lyrics.inactive_color or "#cdd6f4"
+    active = lyrics.active_color or "#cba6f7"
+    lyric_font = lyrics.font_family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    lyric_font_rule = f'font-family: "{lyric_font}";' if lyric_font else ""
+    rules = f"""
+.media-v2-popup .media-section-page, .media-v2-popup .media-section-viewport,
+.media-v2-popup .media-audio, .media-v2-popup .equalizer-body {{ background: transparent; border: none; }}
+.media-v2-popup .media-section-tabs {{ background: #313244; border-radius: {radius}px; }}
+.media-v2-popup .media-section-tabs::tab {{
+    color: #a6adc8; background: transparent; border: none; border-radius: 0;
+    padding: 0 {s(8)}px; min-height: {s(26)}px; font-size: {s(11.5)}px;
+}}
+.media-v2-popup .media-section-tabs::tab:selected {{ background: #cba6f7; color: #1e1e2e; }}
+.media-v2-popup .media-section-tabs::tab:first {{ border-top-left-radius: {radius}px; border-bottom-left-radius: {radius}px; }}
+.media-v2-popup .media-section-tabs::tab:last {{ border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px; }}
+.media-v2-popup .media-section-tabs::tab:focus {{ border: {s(1)}px solid #cdd6f4; }}
+.media-v2-popup .media-audio QLabel, .media-v2-popup .media-audio QCheckBox {{ color: #cdd6f4; font-size: {s(12)}px; }}
+.media-v2-popup .media-audio .audio-status {{ color: #a6adc8; font-size: {s(11)}px; }}
+.media-v2-popup .media-audio .audio-card {{ background: rgba(49,50,68,180); border-radius: {radius}px; }}
+.media-v2-popup .media-audio .audio-percentage {{ color: #a6adc8; font-size: {s(11.5)}px; font-weight: bold; }}
+.media-v2-popup .media-audio .audio-value {{ color: #cba6f7; font-size: {s(11.5)}px; font-weight: bold; }}
+.media-v2-popup #media-audio-adaptive {{ color: #cdd6f4; font-size: {s(11.5)}px; selection-background-color: #cba6f7; }}
+.media-v2-popup .media-audio QCheckBox {{ selection-background-color: #cba6f7; }}
+.media-v2-popup .media-audio .audio-dynamics {{ background: #313244; border: none; border-radius: {radius}px; }}
+.media-v2-popup .media-audio .audio-dynamics::tab {{ color: #a6adc8; border: none; min-height: {s(28)}px; border-radius: {radius}px; padding: 0 {s(6)}px; font-size: {s(11.5)}px; }}
+.media-v2-popup .media-audio .audio-dynamics::tab:selected {{ color: #1e1e2e; background: #cba6f7; }}
+.media-v2-popup .media-audio .audio-dynamics::tab:disabled {{ color: #7f849c; }}
+.media-v2-popup .media-audio .audio-dynamics::tab:selected:disabled {{ background: #45475a; color: #a6adc8; }}
+.media-v2-popup .media-audio .audio-dynamics::tab:focus {{ border: {s(1)}px solid #cdd6f4; }}
+.media-v2-popup .audio-reset {{ color: #cdd6f4; background: #313244; border: none; border-radius: {radius}px; font-size: {s(11.5)}px; }}
+.media-v2-popup .audio-reset:hover {{ background: #45475a; }}
+.media-v2-popup .audio-reset:disabled {{ color: #7f849c; }}
+.media-v2-popup .media-lyrics, .media-v2-popup .media-lyrics-view {{
+    background: transparent; color: {inactive}; border: none; selection-background-color: {active};
+}}
+.media-v2-popup .media-lyrics-view {{ {lyric_font_rule} font-size: {s(lyrics.font_size)}px; font-weight: {lyrics.font_weight}; }}
+.media-v2-popup .media-lyrics-view .media-lyrics-scrollbar:vertical {{
+    background: transparent; width: {s(6)}px; margin: 0 {s(1)}px 0 0;
+    border: none;
+}}
+.media-v2-popup .media-lyrics-view .media-lyrics-scrollbar::handle:vertical {{
+    background: rgba(166,173,200,120); min-height: {s(18)}px; border-radius: {s(3)}px;
+}}
+.media-v2-popup .media-lyrics-view .media-lyrics-scrollbar::handle:vertical:hover {{ background: #cba6f7; }}
+.media-v2-popup .media-lyrics-view .media-lyrics-scrollbar::handle:vertical:pressed {{ background: #b4befe; }}
+.media-v2-popup .media-lyrics-view .media-lyrics-scrollbar::add-page:vertical,
+.media-v2-popup .media-lyrics-view .media-lyrics-scrollbar::sub-page:vertical {{ background: transparent; }}
+.media-v2-popup .media-lyrics-view QScrollBar::add-line:vertical,
+.media-v2-popup .media-lyrics-view QScrollBar::sub-line:vertical {{ height: 0; }}
+.media-v2-popup .media-lyrics-status {{ color: {inactive}; font-size: {s(12)}px; }}
+.media-v2-popup .lyrics-action {{
+    color: #cdd6f4; background: #313244; border: none; border-radius: {radius}px; font-size: {s(11.5)}px;
+}}
+.media-v2-popup .lyrics-action:hover {{ background: #45475a; }}
+.media-v2-popup .lyrics-action:disabled {{ color: #7f849c; }}
+.media-v2-popup .media-audio QSlider {{ background: transparent; selection-background-color: #cba6f7; }}
+.media-v2-popup .media-audio QSlider::groove:horizontal {{ height: {s(14)}px; background: #313244; border-radius: {s(7)}px; }}
+.media-v2-popup .media-audio QSlider::handle:horizontal {{ width: {s(22)}px; margin: -{s(4)}px 0; background: #cba6f7; border-radius: {s(11)}px; }}
+.media-v2-popup .media-audio QSlider::handle:horizontal:disabled {{ background: #585b70; }}
+
+.media-v2-popup .equalizer-apply {{
+    color: #1e1e2e; background: #cba6f7; border: none;
+    border-radius: {radius}px; font-size: {s(11.5)}px;
+}}
+.media-v2-popup .equalizer-apply:hover {{ background: #e9bfff; }}
+.media-v2-popup .equalizer-apply:pressed {{ background: #b4befe; }}
+.media-v2-popup .equalizer-apply:disabled {{ color: #a6adc8; background: transparent; }}
+"""
+    if scoped:
+        rules = rules.replace(
+            ".media-v2-popup ", f'.media-v2-popup[mediaSectionMetrics="{media_section_key(scale, radius)}"] '
+        )
+    return rules
 
 
 def media_styles(config: MediaV2Config):
@@ -26,6 +136,9 @@ def media_styles(config: MediaV2Config):
 .media-v2-popup .media-output-label, .media-v2-popup .equalizer-status {{ color: #a6adc8; }}
 .media-v2-widget .media-art {{ background: #45475a; color: #cba6f7; }}
 .media-v2-popup .media-art {{ background: transparent; color: #cba6f7; }}
+.media-v2-popup .media-title {{ font-size: {s(19)}px; font-weight: bold; }}
+.media-v2-popup .media-artist {{ font-size: {s(13.5)}px; }}
+.media-v2-popup .playback-time {{ font-size: {s(12)}px; }}
 
 .media-v2-widget .btn.media-info {{ background: transparent; border: none; padding: 0; }}
 .media-v2-widget .btn.media-info:hover {{ background: rgba(205,214,244,0.12); border-radius: {radius}px; }}
@@ -63,6 +176,7 @@ def media_styles(config: MediaV2Config):
 .media-v2-popup .media-source:pressed {{ background: #585b70; color: #cdd6f4; }}
 .media-v2-popup .media-source:disabled,
 .media-v2-popup .media-output-label:disabled {{ color: #7f849c; }}
+.media-v2-popup .media-source:disabled {{ color: #a6adc8; }}
 .media-v2-popup .media-player-selector::drop-down {{
     background: transparent; border: none; width: {s(18)}px;
     border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px;
@@ -77,7 +191,7 @@ def media_styles(config: MediaV2Config):
 .media-v2-popup .media-progress {{ background: transparent; border: none; outline: none; padding: 0; }}
 .media-v2-popup .media-progress-track {{ background: #313244; border: none; border-radius: {s(3)}px; }}
 .media-v2-popup .media-progress-fill {{ background: #89b4fa; border: none; border-radius: {s(3)}px; }}
-.media-v2-popup .media-progress-handle {{ background: #cdd6f4; border: none; border-radius: 999px; }}
+.media-v2-popup .media-progress-handle {{ background: #cdd6f4; border: none; border-radius: {max(1, s(8))}px; }}
 .media-v2-popup .media-progress-fill:disabled,
 .media-v2-popup .media-progress-handle:disabled {{ background: #585b70; }}
 .media-v2-popup .media-separator {{
@@ -85,10 +199,12 @@ def media_styles(config: MediaV2Config):
     margin: {s(16)}px 0; border-radius: {s(1)}px;
 }}
 
+{media_section_styles(config.scale, radius, lyrics=config.popup.lyrics)}
 .media-v2-popup .equalizer-section {{ background: transparent; }}
+.media-v2-popup .equalizer-adaptive-overlay {{ color: #cdd6f4; background: transparent; font-size: {s(18)}px; font-weight: bold; }}
 .media-v2-popup .equalizer {{ color: #cba6f7; }}
 .media-v2-popup .equalizer-title {{ color: #cba6f7; font-size: {s(15)}px; font-weight: bold; }}
-.media-v2-popup .equalizer-current {{ color: #cdd6f4; font-weight: bold; }}
+.media-v2-popup .equalizer-current {{ color: #cdd6f4; font-size: {s(13)}px; font-weight: bold; padding-left: {s(12)}px; }}
 .media-v2-popup .equalizer-status {{ color: #7f849c; font-size: {s(11)}px; }}
 .media-v2-popup .presets .btn.preset {{
     color: #7f849c; background: #313244; font-size: {s(11.5)}px;

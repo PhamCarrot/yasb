@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import os
@@ -82,9 +83,33 @@ def artwork_palette(image: QImage):
     return (result * 3)[:3]
 
 
+from core.widgets.services.media.image_assets import image_digest, shared_image_assets
+
+
 def prepare_assets(image: QImage, filename: str, radius: float):
+    if filename:
+        path = os.path.realpath(os.path.expandvars(os.path.expanduser(filename)))
+        stat = os.stat(path)
+        source = (path, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    else:
+        source = (
+            image.width(),
+            image.height(),
+            image.bytesPerLine(),
+            image.format().value,
+            image.devicePixelRatio(),
+            tuple(image.colorTable()),
+            hashlib.sha256(image.colorSpace().iccProfile().data()).digest(),
+            image_digest(image),
+        )
+    key = ("background", source, radius)
+    prepared, palette = shared_image_assets.get(key, lambda: _prepare_assets(image, filename, radius))
+    return prepared, list(palette)
+
+
+def _prepare_assets(image: QImage, filename: str, radius: float):
     background = prepare_background(image, filename, radius)
-    return background, artwork_palette(image if not image.isNull() else background)
+    return background, tuple(artwork_palette(image if not image.isNull() else background))
 
 
 class MediaSurface(QFrame):
@@ -164,7 +189,7 @@ class MediaSurface(QFrame):
         self.set_media_state(bool(playing), playing)
 
     def _sync_orbit(self):
-        if self.options.mode != "color" and self._ambient and self._has_media and self.isVisible():
+        if self.options.mode != "color" and self._ambient and self._has_media and self._playing and self.isVisible():
             if not self._orbit_timer.isActive():
                 self._orbit_start = time.monotonic()
                 self._orbit_timer.start()
@@ -236,6 +261,7 @@ class MediaSurface(QFrame):
                 animation.stop()
             self._previous = QPixmap()
             self._pixmap = QPixmap()
+            self._loaded_key = None
             self.backgroundMix = 1.0
             if pixmap.isNull() and self.options.mode == "album_art":
                 self._loaded_key = key
@@ -280,7 +306,7 @@ class MediaSurface(QFrame):
             raise
         except Exception:
             logger.warning("Unable to load media background; using QSS fallback", exc_info=True)
-            if is_valid_qobject(self) and key == self._key:
+            if is_valid_qobject(self) and key == self._key and self.isVisible():
                 self._install(key, QPixmap())
 
     def _install(self, key: Any, pixmap: QPixmap, palette: list[str] | None = None):
@@ -310,9 +336,8 @@ class MediaSurface(QFrame):
         if a0 is None:
             return None
         self._orbit_timer.stop()
-        if self._task:
-            self._task.cancel()
-            self._task = None
+        # Cancelling to_thread only cancels its waiter. Retain ownership until
+        # the worker finishes so reopening coalesces onto that same operation.
         settle(self)
         super().hideEvent(a0)
 
@@ -320,23 +345,20 @@ class MediaSurface(QFrame):
         if a0 is None:
             return None
         painter = QPainter(self)
+        bounds = QRectF(self.rect())
+        path = QPainterPath()
+        path.addRoundedRect(bounds, self.radius, self.radius)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipPath(path)
         option = QStyleOption()
         option.initFrom(self)
         cast(QStyle, self.style()).drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
         if self.options.mode == "color":
             color = getattr(self.options, "color", None)
             if color:
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                path = QPainterPath()
-                path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
                 painter.fillPath(path, QColor(color))
             return
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        bounds = QRectF(self.rect())
-        path = QPainterPath()
-        path.addRoundedRect(bounds, self.radius, self.radius)
-        painter.setClipPath(path)
         for pixmap, opacity in ((self._previous, 1 - self._mix), (self._pixmap, self._mix)):
             if pixmap.isNull():
                 continue

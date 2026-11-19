@@ -83,10 +83,12 @@ class WindowsMediaSource:
             raise
 
     def _post(self, callback: Callable[..., Any], *args: Any):
-        if self._closed or self._loop is None:
-            return
+        with self._lock:
+            if self._closed or self._loop is None:
+                return
+            loop = self._loop
         try:
-            self._loop.call_soon_threadsafe(callback, *args)
+            loop.call_soon_threadsafe(callback, *args)
         except RuntimeError:
             logger.debug("Media event ignored during loop shutdown")
 

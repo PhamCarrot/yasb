@@ -1,45 +1,49 @@
-# YASB upstream sync - locally verified
+# Media V2 implementation handoff
 
-Updated 16 November 2026. The requested local sync is complete. **Nothing has been pushed. Computer Use is paused after the user pressed physical Escape.** No further native UI input is authorized until the user resumes it.
+Updated 20 November 2026.
 
-## Source and ownership
+## Current checkout
 
-Use `E:/hi o/yasb`, branch `codex/sync-upstream`. The local merge preserves fork parent `5c791bdb0604015e1257d91a45dc6530bd2a90c1` and includes upstream `37928dfeacc579948c4b4bf12e169bcbf6006ff2`. A fresh `git ls-remote upstream refs/heads/main` matched that upstream tip after verification. `main` and `codex/backup-before-sync` retain the original fork. The resulting local merge commit ID and ancestry are recorded in `.git/sync-investigation/final-verification.json`; read the actual Git state before further work.
+- Repository `E:\hi o\yasb`, branch `codex/sync-upstream`, HEAD `c48acececa31006db98c21fca90b04e8b3cd233a`.
+- The worktree remains dirty from earlier Media V2 and related source batches. Preserve those edits and do not reset or clean the checkout.
+- This batch updated the Media V2 wave painting, paused visualizer scheduling, lyrics focus styling, Equalizer action presentation, lyric provider set, related tests and documentation. Git remains read-only in the checkout.
+- No live YASB process, profile, player, device, endpoint, Equalizer APO state or Windows setting was changed.
 
-One main implementation agent owned all source/Git changes; helpers performed bounded read-only review. No remote publication, live YASB profile edits, real playback commands, Equalizer APO writes, service restarts, or Windows settings changes were performed. Keep these constraints unless the user explicitly changes them.
+The latest public Media V2 source publication is [a7d7c7a5](https://github.com/PhamCarrot/yasb/commit/a7d7c7a573feca5db8ca13e8b52c081ede0d2778). The current checkout contains later local source work, so the documentation below describes the checkout rather than a new publication.
 
-## Decisions and resulting behavior
+## Current Media V2 contract
 
-- Restored all upstream documentation/tooling, including 44 silently retained deletions, and upstream DPI/bar fixes.
-- Retained Media V2, its components, shared MediaBackend/Windows source/model, optional APO support and both custom guides. Kept async shutdown drain and build inclusions.
-- Kept one media owner: the legacy WindowsMedia adapter delegates to MediaBackend; Media V2 and the visualizer label share it. Replaced the deleted singleton import with upstream-style lifetime-aware local Qt singleton.
-- Kept coherent upstream loopback/capture-source/idle lifecycle; reapplied custom title/artist formatting, scrolling and independent visualizer opacity. Media Lite keeps the artwork-background QSS class while retaining upstream icon/AUMID imports, DPI handling and popup clipping.
-- Kept upstream dependencies and strict Ruff/Pyright/test policy, including no pywin32. The old unused numpy/pyaudiowpatch pins were not reintroduced.
-- Added explicit types and Qt override signatures needed by upstream strict checking. Qt properties use the existing upstream getter/setter binding pattern. No blanket type exclusions or weakened tests. Narrow Pillow/comtypes missing-stub annotations follow upstream conventions.
-- Regenerated schema from models: 60 registered widgets and 359 definitions, retaining Media V2 and custom label options alongside upstream capture source.
+- The popup lower section contains Equalizer, Audio and Lyrics tabs when `popup.show_equalizer` is enabled. Local lyric-file import and the Audio Test action are not part of the current Media V2 contract.
+- `popup.lyrics.provider_order` accepts LRCLIB, NetEase, Better Lyrics and Musixmatch in any unique order. Lookup follows that order after disabled Musixmatch is filtered. Musixmatch needs an enabled route and an API key.
+- Equalizer band edits remain drafts until **Apply**. Presets apply immediately. `write_debounce_ms` remains accepted for compatibility and has no effect.
+- The current UI fixes keep short progress-wave fills visible while clipping the styled frame to the authoritative progress fill. The paused visualizer no longer runs its ambient orbit timer. The clean Equalizer header hides its action box until a draft or recovery action needs it. Lyrics no longer draw a focus rectangle around the active line. Lower-section layout keeps the EQ band row, two-row preset box and tab strip reachable. The Lyrics scrollbar uses `media-lyrics-scrollbar`, and the Equalizer effect overlay resynchronizes after Lyrics-to-Equalizer navigation and resize.
+- The guide documents the native processor fields, profile and endpoint binding, persistence versus processing status, and the x64-only optional DSP build. The ordinary package does not install or activate that DLL.
 
-## Verification in this implementation session
+## Packaging and ARM64 CI
 
-Private environment: `.git/sync-venv` using Python 3.14.10, Qt 6.10.2, Ruff 0.17.1 and Pyright 1.1.414. Logs, exact commands, profiles and source hashes are local in `.git/sync-investigation/`. Verified source manifest: `verified-source-sha256.json`, SHA-256 `ef85c241594d054a175369c4316c5c84073e8553e122fd551955072d9dfdc565` (494 source/test/schema/guide inputs). Check it before reusing build evidence.
+- From `src`, the ordinary package commands remain `python build.py build` and `python build.py bdist_msi`. The MSI is written under `src/dist/out/` with an `x64` or `aarch64` suffix.
+- `src/build.py` detects x64 or ARM64 and selects the matching tray-hook and Everything DLL. The frozen package includes `schema.json`, `MEDIA_V2_GUIDE.md` and `MEDIA_VISUALIZER_LABEL_GUIDE.md`.
+- The optional native Media V2 DSP is built from the repository root with `python -m src.build_media_dsp`. It requires x64 Windows and writes to `build/media-dsp/` with its receipt and vendor notices.
+- `.github/workflows/tests.yaml` runs pytest on `windows-latest` x64 and `windows-11-arm` ARM64. The PR workflow has x64 and ARM64 package jobs. Release workflows use `x64` and `aarch64` artifact and MSI naming. These workflow paths do not provide local ARM64 runtime or presented-frame evidence for this checkout.
 
-Final checks:
+## Current-batch verification
 
-- `.git/sync-venv/Scripts/ruff.exe check .`: exit 0, all checks passed (`ruff-lint.log`).
-- `.git/sync-venv/Scripts/ruff.exe format --check .`: exit 0, 474 files already formatted (`ruff-format.log`).
-- `.git/sync-venv/Scripts/pyright.exe --pythonpath <private Python> --outputjson`: exit 0, 469 files, **0 errors / 0 warnings** (`pyright-pass5.json`). Earlier failed runs (3473, 451, 105, 51 errors) are diagnostic history, not passes.
-- Private Python `-m pytest -q`: exit 0, **2198 passed, 1 skipped in 51.90 s** (`tests-final.log`). Includes 14 focused custom checks: shared selection, command targeting, unknown-repeat compatibility, late session removal, shutdown, labels, idle/disc leases and all four popup artwork layouts. Windows SDK checks used MSVC 14.44.35207 / SDK 10.0.26100.0 / x64. The sole skip is `atiadlxx.dll` unavailable on this machine.
-- Private Python `src/core/validation/export_schema.py` under owned profile: exit 0, no import failures; schema contracts checked (`schema-export.log`).
-- From `src`, private Python `build.py build`: exit 0 (`build.log`). Build folder: `src/dist`. Custom modules/validation are in `lib/library.zip`; both guides and schema byte-match source. `yasb.exe` SHA-256: `674b615696f03453ccb5b1b6f4ed45fcbfd5ebdd3dfa10462e6347e6f1915cc9`. No MSI was installed.
-- Real, read-only GSMTC backend probe: exit 0, manager ready, **0 active sessions**, no errors, 0 commands; close drained all tasks and timer (`native-media-readonly.json`). This does not establish real-player playback behavior.
-- Custom delta `git diff --check upstream/main` and unstaged whitespace check: exit 0. The raw pre-final staging index check exited 2 for 359 inherited upstream documentation/line-ending warnings across 45 paths (`whitespace-index.log`); upstream docs were preserved rather than reformatted outside scope.
-- Independent read-only review found no concrete behavior loss in the 31 Qt properties, equalizer collaboration-state renames, typed closure captures, label integration or Windows source/task ownership.
+The checks below were run against the current checkout after the source changes.
 
-## Native/visual evidence and remaining limits
+- The complete media and Equalizer widget set exited 0 with **552 passed, 1,298 warnings in 106.95 s**. The warnings are existing `qasync` deprecations.
+- `python -m compileall -q src tests` exited 0.
+- `python build.py build` and `python build.py bdist_msi` exited 0. The MSI is `src/dist/out/yasb-2.0.9-x64.msi`.
+- The final UI benchmark exited 0. Common event-loop p95 improved from **3.19 ms to 1.39 ms** for paused-open and from **11.40 ms to 6.82 ms** for the two-window paused large-art case. The final playing-open p95 was **6.01 ms**. Large-art decode and background calls remained one each, with zero final readers.
+- Ruff was unavailable in the project environment, so no Ruff result is claimed for this batch.
 
-The owned synthetic preview used the actual private interpreter/profile and current source. Node REPL `@oai/sky` inventoried and bound the exact returned window and executable; the main preview rendered Media V2, timeline and visualizer label. The user then physically Escape-stopped Computer Use. No further Computer Use calls were made. Native popup input was not completed reliably, so do not claim native popup/control parity. The preview's own receipt records closed=true, one source close and zero capture readers; it was already absent at process cleanup inspection. All three recorded preview playback actions went only to the synthetic source.
+## Remaining evidence gaps
 
-The four popup layouts rendered in the automated offscreen Qt tests. Real-player controls, real WASAPI/device switching, mixed-DPI interaction, optional APO configuration writes and ARM64 remain unverified. The frozen build emitted upstream-style optional-module/API-set and duplicate-resource warnings; build success is not a complete frozen-UI runtime claim. Preserve live profiles and the Computer Use pause.
+Production-main startup, physical popup input, compositor-presented frames, mixed-DPI displays, live lyric-provider responses, real endpoint and APO/DSP processing, stable duplicate-track identity and local ARM64 runtime behavior still need separately authorized evidence. Synthetic Preview and CI matrix results do not close those gaps.
+
+## Preserved history
+
+Detailed source and runtime records remain in the history directory. The most relevant records are [themed popup refinements](history/MEDIA_V2_THEMED_POPUP_2026-11-19.md), [owner repairs](history/MEDIA_V2_OWNER_REPAIRS_2026-11-19.md), [ordinary startup and real use](history/MEDIA_V2_REAL_USE_2026-11-19.md), [startup trace](history/YASB_STARTUP_TRACE_2026-11-19.md) and [architecture review](history/MEDIA_V2_ARCHITECTURE_2026-11-18.md). Older records retain their original observations and should not be read as the current public contract.
 
 ## Next action
 
-No implementation queue remains for this request. Let the user review the local sync branch/build. Do not push, publish, install, replace the live YASB setup or resume native automation without their instruction. For an explicitly requested future native check, use `.git/sync-investigation/preview.py` with the owned profile and bind fresh returned window identities; do not reuse old handles or coordinates.
+The requested remote replacement still needs a deliberate review of the target branch and an explicit force-replace confirmation before any Git write. Until then, keep Git, live YASB state and native endpoint state read-only. Before a future source or release batch, reread this handoff, inspect the dirty checkout, and rerun source-bound verification against the current source identity.

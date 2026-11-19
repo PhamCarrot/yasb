@@ -113,6 +113,34 @@ media_v2:
       equalizer_position: "bottom"
       show_separator: true
 
+      lyrics:
+        alignment: "left"
+        center_position: 0.44
+        lines_before: -1
+        lines_after: -1
+        inactive_opacity: -1.0
+        active_color: null
+        inactive_color: null
+        font_family: ""
+        font_size: 18
+        font_weight: 700
+        margins:
+          horizontal: 4
+          vertical: 0
+          placeholder: 8
+        line_height: 30
+        line_spacing: 6
+        animation_duration_ms: 650
+        browse_return_ms: 4000
+        drag_threshold: 4
+        auto_lookup: true
+        provider_order: ["lrclib", "netease", "better_lyrics"]
+        better_lyrics_enabled: true
+        musixmatch_enabled: false
+        musixmatch_api_key: ""
+        request_spacing_ms: 250
+        request_timeout_ms: 10000
+
       disc:
         spin: true
         visualizer: true
@@ -145,6 +173,9 @@ media_v2:
         apo:
           enabled: false
           target_device: "default"
+          processor: "graphic_eq"
+          native_library: ""
+          native_sha256: ""
           auto_preamp: true
           preamp_db: 0.0
           write_debounce_ms: 100
@@ -252,6 +283,7 @@ The full option path is `controls.size`. This intentionally keeps the icon propo
 | `time_display` | string | `"total"` | `total`, `remaining` | Show total duration or remaining time at the right side. |
 | `equalizer_position` | string | `"bottom"` | `top`, `bottom` | Position of equalizer relative to main media details. |
 | `show_separator` | boolean | `true` | — | Show separator between media details and equalizer. |
+| `lyrics` | object | See below | — | Lyrics rendering and bounded online provider lookup. |
 | `disc` | object | See below | — | Animated popup artwork/disc options. |
 | `equalizer` | object | See below | — | Equalizer UI/audio backend. |
 | `background` | object | See below | — | Popup content background. |
@@ -304,6 +336,83 @@ Whether the labels scroll is controlled separately by `scroll_title` and `scroll
 | `show_handle` | boolean | `true` | — | Show the seek handle. |
 
 The entire progress control is disabled when the active GSMTC session is not seekable.
+
+The seekbar host is 50 logical pixels high and includes a moving played-wave
+layer. The wave remains clipped to the authoritative progress fill, keeps a
+visible crest for short fills, fades while paused and stops when hidden. Seek
+commands still use the captured media session and seek revision.
+
+---
+
+# `popup.lyrics`
+
+| Option | Type | Default | Values / Range | Description |
+|---|---|---:|---|---|
+| `alignment` | string | `"left"` | `left`, `center`, `right` | Horizontal alignment for lyric rows. |
+| `center_position` | float | `0.44` | `0.0–1.0` | Vertical position of the active line while following playback. |
+| `lines_before` | integer | `-1` | `-1–100` | Visible rows before the active line. `-1` keeps all rows visible. |
+| `lines_after` | integer | `-1` | `-1–100` | Visible rows after the active line. `-1` keeps all rows visible. |
+| `inactive_opacity` | float | `-1.0` | `-1.0–1.0` | Opacity for inactive rows. `-1` keeps distance-based opacity. |
+| `active_color` | string or null | `null` | Qt color | Active line and word color. `null` follows the current palette. |
+| `inactive_color` | string or null | `null` | Qt color | Inactive lyric color. `null` follows the current palette. |
+| `font_family` | string | `""` | Installed font or empty | Uses the popup font when empty. |
+| `font_size` | integer | `18` | `8–72` | Lyric font size in logical pixels. |
+| `font_weight` | integer | `700` | Qt weight values | Qt font weight. |
+| `margins` | object | See below | — | Lyric row and placeholder margins. |
+| `line_height` | integer | `30` | `0–200` | Minimum lyric row height in logical pixels. |
+| `line_spacing` | integer | `6` | `0–100` | Spacing between lyric rows and placeholder controls. |
+| `animation_duration_ms` | integer | `650` | `0–5000` ms | Line and scroll animation duration. |
+| `browse_return_ms` | integer | `4000` | `0–60000` ms | Delay before browsing returns to the playing line. |
+| `drag_threshold` | integer | `4` | `1–64` px | Pointer movement needed to start lyric browsing. |
+| `auto_lookup` | boolean | `true` | — | Start provider lookup when Lyrics is selected. |
+| `provider_order` | list | `["lrclib", "netease", "better_lyrics"]` | Unique provider names | Provider sequence for bounded fallback lookup. LRCLIB, NetEase, Better Lyrics and optional Musixmatch are accepted. The configured order is used after disabled Musixmatch is removed. If none remain active, the default active chain is used. |
+| `better_lyrics_enabled` | boolean | `true` | — | Allow the documented Better Lyrics API route. |
+| `musixmatch_enabled` | boolean | `false` | — | Opt in to Musixmatch requests. |
+| `musixmatch_api_key` | string | `""` | — | API key for the official Musixmatch API. |
+| `request_spacing_ms` | integer | `250` | `200–5000` ms | Minimum spacing between provider requests. |
+| `request_timeout_ms` | integer | `10000` | `1000–60000` ms | Transfer timeout for a provider request. |
+
+## `popup.lyrics.margins`
+
+| Option | Type | Default | Range | Description |
+|---|---|---:|---|---|
+| `horizontal` | integer | `4` | `0–64` px | Horizontal lyric row margin. |
+| `vertical` | integer | `0` | `0–64` px | Reserved vertical panel margin. |
+| `placeholder` | integer | `8` | `0–64` px | Horizontal margin for empty and status content. |
+
+The legacy aliases `center_ratio`, `visible_lines_before`, `visible_lines_after`,
+`activeLineColor`, `inactiveLineColor`, `fontFamily`, `fontWeight`, `lineHeight`,
+`lineSpacing`, `animation_ms`, `return_delay_ms`, and `providers` remain accepted
+and are normalized to the names above.
+
+Provider adapters share the request bounds, spacing and cancellation rules.
+Better Lyrics can return TTML with word timing. Musixmatch requires an
+explicit API key.
+
+## Lyrics behavior
+
+Lyrics lookup starts only while the popup is visible and the Lyrics tab is
+selected. The default order is LRCLIB, NetEase and Better Lyrics. Musixmatch
+can be placed anywhere in `provider_order` when its opt-in key is complete. The
+effective sequence keeps the configured order after disabled Musixmatch is
+filtered. If filtering removes every configured route, the default active chain
+is used. Missing artist metadata prevents automatic lookup.
+
+Responses are limited to 1 MiB, 5000 rows, 16384 characters per row and 30000
+words. Invalid or unsupported data produces an error state. Instrumental and
+unsynchronized plain lyrics have distinct presentations, and missing timing is
+not invented. The lyric view exposes source and format warnings through its
+tooltip and accessible description.
+
+Timed lyrics follow the current line. Wheel, drag or keyboard browsing pauses
+follow for `browse_return_ms`; right-click resumes it immediately. Clicking a
+timed line, or selecting it with the arrow keys and pressing Enter, requests a
+seek when the player allows it. Track or source changes, metadata refresh,
+dragging, tab changes, focus loss and close cancel a captured seek.
+
+When `show_equalizer: true`, the lower section contains Equalizer, Audio and
+Lyrics tabs. Ctrl+Tab and Ctrl+Shift+Tab switch sections, while Tab moves
+through the controls. The option still controls the entire lower section.
 
 ---
 
@@ -423,9 +532,12 @@ Equalizer APO support is optional.
 |---|---|---:|---|---|
 | `enabled` | boolean | `false` | — | Enables APO writes. `backend` must also be `equalizer_apo`. |
 | `target_device` | string | `"default"` | `default` only | Target the current Windows default multimedia render device. |
+| `processor` | string | `"graphic_eq"` | `graphic_eq`, `native` | Select the managed GraphicEQ file or the optional native DSP route. |
+| `native_library` | string | `""` | Absolute DLL path | Native processor DLL to validate and load when `processor: native`. |
+| `native_sha256` | string | `""` | 64 lowercase hex characters | Prepared SHA-256 for `native_library`. The DLL is rejected if its hash does not match. |
 | `auto_preamp` | boolean | `true` | — | Automatically reduce preamp by the largest positive EQ gain. |
 | `preamp_db` | float | `0.0` | `-24–12` dB | Manual preamp when `auto_preamp` is disabled. |
-| `write_debounce_ms` | integer | `100` | `50–500` ms | Delay used to coalesce slider changes before writing APO configuration. |
+| `write_debounce_ms` | integer | `100` | `50–500` ms | Deprecated and ignored. Manual band changes are written only by Apply. |
 | `manage_include` | boolean | `false` | — | Allow Media V2 to install/manage its Include block in Equalizer APO `config.txt`. |
 
 For actual audio processing both must be enabled:
@@ -444,6 +556,37 @@ backend: "visual"
 ```
 
 the controls intentionally affect only the Media V2 display.
+
+## Manual changes and Apply
+
+Moving a band or releasing its slider changes a draft only. **Apply** commits the complete curve. Closing the popup or leaving the Equalizer section discards unsubmitted edits. There is no legacy autosave mode; `write_debounce_ms` remains readable for configuration compatibility and has no effect.
+
+Preset buttons remain immediate actions. Popups using the same managed file share committed/applied state; a second popup cannot overwrite or cancel another popup's active draft. Closing the editing popup releases its draft lease. Output-device changes retarget the shared committed curve, not an unsubmitted draft.
+
+**Saved** means the managed configuration was persisted successfully; it does not prove that Equalizer APO is active on the endpoint. Failed writes retain the requested curve and show **Retry**. With the visual backend the button says **Visual only**, and no audio settings are written.
+
+## Native processor
+
+The optional `native` processor uses an absolute DLL path and its prepared
+SHA-256. The default `graphic_eq` processor keeps the ordinary Equalizer APO
+file behavior. Build the optional x64 DLL from the repository root with:
+
+```powershell
+python -m src.build_media_dsp
+```
+
+This writes `YASBMediaProcessor.dll`, its build receipt and vendor notices to
+`build/media-dsp/`. The command does not install or activate the DLL in
+Equalizer APO. Native processing is reported separately from persistence, so a
+successful save does not confirm endpoint processing. A missing processor or a
+disconnected host remains unavailable and does not silently select another
+processor.
+
+Native state is profile- and endpoint-bound. The previous managed GraphicEQ
+leaf is retained as `yasb-media-v2-eq.txt.yasb-native-backup`, and the native
+state record keeps its own first `.json.backup`. Native settings use the same
+Apply flow as the manual curve. Audio actions use the committed curve and keep
+an unsubmitted EQ draft intact.
 
 ## Equalizer APO files
 
@@ -474,7 +617,7 @@ config.txt.yasb-backup
 - Equalizer APO must already be installed and configured for the Windows output device.
 - Media V2 currently supports only `target_device: "default"`.
 - Changing the Windows default output causes Media V2 to retarget the current visible EQ curve.
-- Media V2 writes a device-specific 10-band `GraphicEQ`.
+- The `graphic_eq` processor writes a device-specific 10-band `GraphicEQ`. The `native` processor writes its validated native route payload instead.
 - Existing custom Equalizer APO filters remain active and can stack with the Media V2 EQ.
 - Peace is deliberately not rewritten. If Peace is detected, the two processing chains can stack.
 - `manage_include: false` requires the YASB Include block to already exist in `config.txt`.
@@ -484,6 +627,38 @@ config.txt.yasb-backup
 - Write permissions can prevent configuration changes.
 - If Windows does not provide a default multimedia render endpoint, APO processing cannot be targeted.
 - The visual sliders keep their intended position even if an APO write fails; status text reports the backend problem.
+
+## Popup layout and packaging
+
+The standard popup targets 625x565 logical pixels at `scale: 1`. The lower
+section has a 235-pixel preferred viewport and negotiates down within that
+shell. The canonical layout keeps the 155-pixel EQ band row, the two-row preset
+box and the tab strip reachable. Larger custom styles can use the section's
+inner scroll area.
+
+The Audio tab provides balance, mono, channel swap, Dynamic range and Reset.
+Reset keeps Dynamic EQ and bypass state while resetting balance, mono, channel
+swap and dynamics. The Dynamic control lives in the lower-section header. When
+it is active, the manual EQ page is dimmed and a page-scoped overlay blocks
+manual edits until the mode changes.
+
+Popup controls use staggered entrance and a 500 ms cascading exit. Leaving a
+page or starting a close cancels active gestures and lyric demand, and reopening
+during the exit reverses from the current presentation. These are presentation
+states and do not confirm endpoint processing.
+
+The optional native DSP build is x64-only and is separate from the ordinary
+YASB executable and MSI. The ordinary build from `src` is:
+
+```powershell
+python build.py build
+python build.py bdist_msi
+```
+
+`build.py` detects x64 or ARM64, selects the matching tray-hook and Everything
+DLL, and writes the MSI under `src/dist/out/` with an `x64` or `aarch64` suffix.
+The frozen package includes this guide, the visualizer-label guide and the
+root `schema.json`.
 
 ---
 
@@ -700,7 +875,7 @@ Using semantic classes is recommended for general themes. IDs are useful when ta
 | Artist | `#media-v2-artist`, `.media-artist`, `.artist` |
 | Output row | `#media-v2-output`, `.media-output` |
 | Output label | `#media-v2-output-label`, `.media-output-label`, `.label` |
-| Visible source button | `#media-source`, `.media-source` |
+| Informational source pill | `#media-source`, `.media-source` |
 | Player selector | `#media-player-selector`, `.media-player-selector`, `.combobox` |
 | Player menu | `#media-player-menu`, `.media-player-menu`, `.menu` |
 | Timeline container | `#media-v2-timeline`, `.media-timeline` |
@@ -711,6 +886,18 @@ Using semantic classes is recommended for general themes. IDs are useful when ta
 | Elapsed label | `#media-v2-elapsed`, `.playback-time.elapsed` |
 | Duration label | `#media-v2-duration`, `.playback-time.duration` |
 | Separator | `#media-v2-separator`, `.separator.media-separator` |
+| Section tabs | `#media-section-tabs`, `.media-section-tabs` |
+| Section viewport | `#media-section-viewport`, `.media-section-viewport` |
+| Audio panel | `#media-audio`, `.media-audio` |
+| Audio balance | `#media-audio-balance`, `.audio-balance` |
+| Audio dynamics | `#media-audio-dynamics`, `.audio-dynamics` |
+| Audio status | `#media-audio-status`, `.audio-status` |
+| Audio reset | `#media-audio-reset`, `.audio-reset` |
+| Lyrics panel | `#media-lyrics`, `.media-lyrics` |
+| Lyrics view | `#media-lyrics-view`, `.media-lyrics-view` |
+| Lyrics scrollbar | `#media-lyrics-scrollbar`, `.media-lyrics-scrollbar` |
+| Lyrics status | `#media-lyrics-status`, `.media-lyrics-status` |
+| Lyrics retry | `#lyrics-retry`, `.lyrics-action` |
 
 ## Popup playback-state classes
 
@@ -745,7 +932,7 @@ Examples:
 
 ## Player-selection classes
 
-Both the selector model and visible source button can expose:
+Both the player selector and the informational source pill can expose:
 
 ```css
 .automatic
@@ -755,16 +942,16 @@ Both the selector model and visible source button can expose:
 For example:
 
 ```css
-.media-source.automatic {
+.media-player-selector.automatic {
     border: 1px solid transparent;
 }
 
-.media-source.pinned {
+.media-player-selector.pinned {
     border: 1px solid #a78bfa;
 }
 ```
 
-The combo selector itself is normally hidden by the current popup implementation; the visible `.media-source` button opens its anchored menu.
+With two or more sessions, `.media-player-selector` opens the anchored player menu. With fewer sessions, `.media-source` displays the source when available.
 
 ---
 
@@ -1280,11 +1467,11 @@ The slider becomes disabled automatically when GSMTC does not provide a valid se
 
 ## Source-menu states
 
-Visible source button:
+Player selector and informational source pill:
 
 ```css
-.media-source:hover {}
-.media-source:pressed {}
+.media-player-selector:hover {}
+.media-player-selector:pressed {}
 .media-source:disabled {}
 
 .media-source.automatic {}
@@ -1309,6 +1496,20 @@ Popup menu:
 
 .eq-band::handle:vertical:hover {}
 .eq-band::handle:vertical:pressed {}
+```
+
+## Audio and Lyrics states
+
+```css
+.media-audio .audio-card {}
+.media-audio .audio-status {}
+.media-audio .audio-reset:hover {}
+.media-lyrics-view {}
+.media-lyrics-scrollbar:vertical {}
+.media-lyrics-scrollbar::handle:vertical:hover {}
+.media-lyrics-scrollbar::handle:vertical:pressed {}
+.media-lyrics-status {}
+.lyrics-action:hover {}
 ```
 
 ## Transport states

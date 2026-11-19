@@ -15,6 +15,7 @@ Media V2's popup design and motion are inspired by the media widget in [Serpanti
 - One-click `Via ...` player selection with automatic and manual modes.
 - Configurable popup layout, artwork position, progress display, background, disc visualizer, and equalizer.
 - Independent bar and popup scrolling, artwork size, and proportional control sizes.
+- Lyrics tab with bounded online lookup through an ordered provider chain, line/word timing when supplied, browsing and captured click/keyboard seek.
 - Equalizer preset effects including lightning, low-to-high ripple, and center-out pulse.
 - YASB-compatible callbacks, keybindings, semantic QSS selectors, and accessibility.
 
@@ -67,7 +68,7 @@ But to get started quickly, choose one of the installation methods below:
 <details open>
 <summary><strong>Download .msi from GitHub</strong></summary>
 <br/>
-Go to the <a href="https://github.com/amnweb/yasb/releases/latest">YASB GitHub releases</a>, click Assets to reveal the downloads, and choose the installer that matches your architecture and install scope. For most devices, that's the x64 per-user installer.
+Go to the <a href="https://github.com/amnweb/yasb/releases/latest">YASB GitHub releases</a>, click Assets to reveal the downloads, and choose the installer that matches your architecture. For most devices, that's the x64 installer.
 </details>
 
 <details>
@@ -186,3 +187,11 @@ Thanks to our amazing contributors!
 
 ## 🔑 Code Signing Policy
 Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/)
+
+## Media V2 update
+
+The popup has themed Equalizer, Audio and Lyrics tabs. Lyrics lookup follows `popup.lyrics.provider_order` across LRCLIB, NetEase and Better Lyrics, with optional Musixmatch. Better Lyrics is enabled by default. Musixmatch requires an enabled route with an API key. Disabled opt-in routes are removed before lookup.
+
+Dragging an equalizer band after selecting a preset preserves the other bands. Choose **Apply** to save a custom curve. Preset names stay visible during transitions, and scrolling over the tab strip keeps the current tab selected.
+
+The ordinary Windows package is built from `src` with `python build.py build` and `python build.py bdist_msi`. The build selects x64 or ARM64 resources and writes the installer under `src/dist/out/`. The optional native Media V2 DSP is built separately on x64 Windows with `python -m src.build_media_dsp` and is not installed by that command.

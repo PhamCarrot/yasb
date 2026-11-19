@@ -34,7 +34,9 @@ build_options = {
     "silent_level": 1,
     "silent": True,
     "excludes": ["PySide6", "pydoc_data", "email", "tkinter", "PyQt5", "PySide2", "unittest"],
-    "bin_excludes": ["Qt6Pdf.dll", "_avif.cp314-win_amd64.pyd"],
+    # The PyQt wheel imports Windows ICU. A same-named ICU found on PATH can
+    # export versioned symbols instead and prevent QtCore from loading.
+    "bin_excludes": ["Qt6Pdf.dll", "_avif.cp314-win_amd64.pyd", "icuuc.dll"],
     "zip_exclude_packages": [],
     "zip_include_packages": ["*"],
     "no_compress": True,

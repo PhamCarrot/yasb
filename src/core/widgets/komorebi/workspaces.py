@@ -1,6 +1,6 @@
 import logging
 from contextlib import suppress
-from typing import Any, Literal, override
+from typing import Any, Literal, cast, override
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QMouseEvent, QPixmap, QWheelEvent
@@ -59,19 +59,24 @@ class WorkspaceButton(QPushButton):
             current_class = button.property("class")
             new_class = " ".join([cls for cls in current_class.split() if not cls.startswith("button-")])
             new_class = f"{new_class} button-{index + 1}"
-            button.setProperty("class", new_class)
-            refresh_widget_style(button)
+            if new_class != current_class:
+                button.setProperty("class", new_class)
+                refresh_widget_style(button)
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
-        self.setProperty("class", f"ws-btn {status.lower()}")
+        current_class = self.property("class") or ""
+        button_classes = [cls for cls in current_class.split() if cls.startswith("button-")]
+        new_class = " ".join(["ws-btn", status.lower(), *button_classes])
         if status == WORKSPACE_STATUS_ACTIVE:
             self.setText(self.active_label)
         elif status == WORKSPACE_STATUS_POPULATED:
             self.setText(self.populated_label)
         else:
             self.setText(self.default_label)
-        refresh_widget_style(self)
+        if new_class != current_class:
+            self.setProperty("class", new_class)
+            refresh_widget_style(self)
 
     def activate_workspace(self):
         try:
@@ -132,19 +137,24 @@ class WorkspaceButtonWithIcons(QFrame):
             current_class = button.property("class")
             new_class = " ".join([cls for cls in current_class.split() if not cls.startswith("button-")])
             new_class = f"{new_class} button-{index + 1}"
-            button.setProperty("class", new_class)
-            refresh_widget_style(button)
+            if new_class != current_class:
+                button.setProperty("class", new_class)
+                refresh_widget_style(button)
 
     def update_and_redraw(self, status: WorkspaceStatus):
         self.status = status
-        self.setProperty("class", f"ws-btn {status.lower()}")
+        current_class = self.property("class") or ""
+        button_classes = [cls for cls in current_class.split() if cls.startswith("button-")]
+        new_class = " ".join(["ws-btn", status.lower(), *button_classes])
         if status == WORKSPACE_STATUS_ACTIVE:
             self.text_label.setText(self.active_label)
         elif status == WORKSPACE_STATUS_POPULATED:
             self.text_label.setText(self.populated_label)
         else:
             self.text_label.setText(self.default_label)
-        refresh_widget_style(self)
+        if new_class != current_class:
+            self.setProperty("class", new_class)
+            refresh_widget_style(self)
 
     def update_icons(self, icons: dict[int, QPixmap | None] | None = None):
         if icons:
@@ -370,8 +380,11 @@ class WorkspaceWidget(BaseWidget):
                             self._try_remove_workspace_button(workspace_index)
                 self._add_or_update_buttons()
             elif event["type"] in self._workspace_focus_events or self._has_active_workspace_index_changed():
-                # send workspace_update event to active_window widgets
-                self._event_service.emit_event("workspace_update", event["type"])
+                predicted_hwnd = self._predicted_focused_hwnd(state)
+                if predicted_hwnd is not None:
+                    self._event_service.emit_event("komorebi_focus_predicted", predicted_hwnd)
+                else:
+                    self._event_service.emit_event("workspace_update", event["type"])
                 try:
                     prev_workspace_button = self._button_at(self._prev_workspace_index)
                     self._update_button(prev_workspace_button)
@@ -458,6 +471,37 @@ class WorkspaceWidget(BaseWidget):
         if self.komorebi_screen is None:
             return None
         return self._komorebic.get_focused_workspace(self.komorebi_screen)
+
+    def _predicted_focused_hwnd(self, state: dict[str, Any]) -> int | None:
+        """Return the window komorebi is about to focus on this screen."""
+        try:
+            if self.komorebi_screen is None or state["monitors"]["focused"] != self.komorebi_screen["index"]:
+                return None
+            workspace = self._get_focused_workspace()
+            if workspace is None:
+                return None
+            monocle = self._komorebic.get_monocle_container(workspace)
+            if monocle:
+                focused = self._komorebic.get_focused_window(monocle)
+                hwnd = focused.get("hwnd") if isinstance(focused, dict) else None
+                return hwnd if type(hwnd) is int else None
+            maximized = workspace.get("maximized_window")
+            if isinstance(maximized, dict):
+                hwnd = cast(dict[str, Any], maximized).get("hwnd")
+                return hwnd if type(hwnd) is int else None
+            containers = cast(dict[str, Any], workspace["containers"])
+            elements = containers.get("elements")
+            if isinstance(elements, list):
+                elements = cast(list[Any], elements)
+                focused_index = containers.get("focused")
+                if type(focused_index) is int and 0 <= focused_index < len(elements):
+                    container = elements[focused_index]
+                    focused = self._komorebic.get_focused_window(container)
+                    hwnd = focused.get("hwnd") if isinstance(focused, dict) else None
+                    return hwnd if type(hwnd) is int else None
+            return 0
+        except KeyError, TypeError, IndexError:
+            return None
 
     def _has_active_workspace_index_changed(self):
         return self._prev_workspace_index != self.curr_workspace_index

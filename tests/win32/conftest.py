@@ -7,7 +7,7 @@ import pytest
 
 from tests.win32 import discovery
 from tests.win32.msvc import ToolchainMissing, find_toolchain
-from tests.win32.probe import ProbeResult, run_probe
+from tests.win32.probe import PROJECT_HEADERS, ProbeResult, run_probe
 
 _CACHE_KEY = "yasb/win32-sdk-probe"
 _PROBE_SOURCES = ("probe.py", "msvc.py", "specs.py")
@@ -22,6 +22,8 @@ def _fingerprint(toolchain_description: str, requests: discovery.ProbeRequests) 
     digest = hashlib.sha256(toolchain_description.encode())
     for name in _PROBE_SOURCES:
         digest.update((Path(__file__).parent / name).read_bytes())
+    for header in PROJECT_HEADERS:
+        digest.update(header.read_bytes())
     digest.update(json.dumps(requests, default=lambda o: o.__dict__, sort_keys=True).encode())
     return digest.hexdigest()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections import OrderedDict
 from collections.abc import Callable
@@ -39,7 +40,16 @@ pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 logger = logging.getLogger("MediaV2")
 
 
+from core.widgets.services.media.image_assets import shared_image_assets
+
+
 def decode_artwork(data: bytes, extent: int):
+    key = ("artwork", hashlib.sha256(data).digest(), extent)
+    image, _ = shared_image_assets.get(key, lambda: (_decode_artwork(data, extent), ()))
+    return image
+
+
+def _decode_artwork(data: bytes, extent: int):
     """Worker-only QImage decode/resize. QPixmap creation stays on the GUI thread."""
     buffer = QBuffer()
     buffer.setData(QByteArray(data))
@@ -66,6 +76,7 @@ class MediaWidgetV2(BaseWidget):
         self.config = config
         self.s: Callable[[float], int] = lambda value: round(value * config.scale)
         self.backend = backend
+        self._backend_connected = False
         self._state = MediaState()
         self._pixmap = QPixmap()
         self._art_key = None
@@ -147,11 +158,44 @@ class MediaWidgetV2(BaseWidget):
 
     @pyqtSlot()
     def _connect_backend(self):
-        if self.backend is None:
-            self.backend = MediaBackend.shared()
-        self.backend.state_changed.connect(self._on_state)
-        self.backend.action_finished.connect(self._action_finished)
-        self._on_state(self.backend.state)
+        backend = self._ensure_backend()
+        if backend is None:
+            backend = MediaBackend.shared()
+            self.backend = backend
+            self._attach_backend(backend)
+
+    def _disconnect_backend(self, backend: MediaBackend) -> None:
+        if not is_valid_qobject(backend):
+            return
+        try:
+            backend.state_changed.disconnect(self._on_state)
+            backend.action_finished.disconnect(self._action_finished)
+        except RuntimeError, TypeError:
+            pass
+
+    def _attach_backend(self, backend: MediaBackend) -> None:
+        backend.state_changed.connect(self._on_state)
+        backend.action_finished.connect(self._action_finished)
+        self._backend_connected = True
+        self._on_state(backend.state)
+
+    def _ensure_backend(self) -> MediaBackend | None:
+        backend = self.backend
+        if backend is None:
+            return None
+        if is_valid_qobject(backend) and not backend.closed:
+            if not self._backend_connected:
+                self._attach_backend(backend)
+            return backend
+        self._disconnect_backend(backend)
+        self._backend_connected = False
+        shared = MediaBackend.shared_instance()
+        if shared is None or shared is backend:
+            return backend
+        backend = MediaBackend.shared()
+        self.backend = backend
+        self._attach_backend(backend)
+        return backend
 
     def _sync_widget_class(self):
         tokens = ["widget", "media-v2-widget", *self.config.class_name.split()]
@@ -168,12 +212,14 @@ class MediaWidgetV2(BaseWidget):
         controls.next.clicked.connect(lambda: self._action("next"))
 
     def _action(self, action: str):
-        if self.backend:
-            getattr(self.backend, action)()
+        backend = self._ensure_backend()
+        if backend:
+            getattr(backend, action)()
 
     def _select_session(self, sid: str | None):
-        if self.backend:
-            self.backend.select_session(sid)
+        backend = self._ensure_backend()
+        if backend:
+            backend.select_session(sid)
 
     def _activate_info(self):
         input_mode = self.info.take_activation_mode()
@@ -348,8 +394,10 @@ class MediaWidgetV2(BaseWidget):
             self.info.setFocus(Qt.FocusReason.PopupFocusReason)
 
     def _seek(self, seconds: float, identity: Any):
-        if self.backend and identity == track_identity(self.backend.state.active):
-            self.backend.seek(seconds)
+        backend = self._ensure_backend()
+        active = backend.state.active if backend else None
+        if backend and active and active.is_seekable and identity == (active.session_id, active.seek_revision):
+            backend.seek(seconds, expected_revision=active.seek_revision)
         elif self.dialog:
             self.dialog.progress.reject_seek()
 
@@ -366,8 +414,9 @@ class MediaWidgetV2(BaseWidget):
     def wheelEvent(self, a0: QWheelEvent | None):
         if a0 is None:
             return None
-        if self.backend and a0.angleDelta().y():
-            self.backend.switch_session(1 if a0.angleDelta().y() > 0 else -1)
+        backend = self._ensure_backend()
+        if backend and a0.angleDelta().y():
+            backend.switch_session(1 if a0.angleDelta().y() > 0 else -1)
             a0.accept()
         else:
             a0.ignore()

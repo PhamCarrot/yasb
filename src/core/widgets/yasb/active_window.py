@@ -54,6 +54,7 @@ class ActiveWindowWidget(BaseWidget):
     window_name_change = pyqtSignal(int, WinEvent)
     window_destroy = pyqtSignal(int, WinEvent)
     focus_change_workspaces = pyqtSignal(str)
+    focus_predicted = pyqtSignal(object)
     validation_schema = ActiveWindowConfig
     event_listener = SystemEventListener
 
@@ -63,6 +64,7 @@ class ActiveWindowWidget(BaseWidget):
         self.dpi: float | None = None
         self._win_info: WindowInfo | None = None
         self._tracked_hwnd: int | None = None
+        self._predicted_hwnd: int | None = None
         self._uwp_retry_count = 0
         self.pixmap: QPixmap | None = None
         self._show_alt = False
@@ -110,6 +112,9 @@ class ActiveWindowWidget(BaseWidget):
         self.focus_change_workspaces.connect(self._on_focus_change_workspaces)
         self._event_service.register_event("workspace_update", self.focus_change_workspaces)
 
+        self.focus_predicted.connect(self._on_focus_predicted)
+        self._event_service.register_event("komorebi_focus_predicted", self.focus_predicted)
+
         # Parent timer to widget so it auto-stops/cleans up on deletion
         self._window_update_timer = QTimer(self)
         self._window_update_timer.setSingleShot(True)
@@ -135,6 +140,7 @@ class ActiveWindowWidget(BaseWidget):
             self._event_service.unregister_event(WinEvent.EventObjectStateChange, self.window_name_change)
             self._event_service.unregister_event(WinEvent.EventObjectDestroy, self.window_destroy)
             self._event_service.unregister_event("workspace_update", self.focus_change_workspaces)
+            self._event_service.unregister_event("komorebi_focus_predicted", self.focus_predicted)
         except Exception:
             pass
 
@@ -190,6 +196,17 @@ class ActiveWindowWidget(BaseWidget):
                 return
             else:
                 self._update_retry_count = 0
+        else:
+            self._set_no_window_or_hide()
+
+    def _on_focus_predicted(self, hwnd: int) -> None:
+        """Update from the window komorebi is about to focus during a workspace switch."""
+        if hwnd:
+            self._predicted_hwnd = hwnd
+            try:
+                self._on_focus_change_event(hwnd, WinEvent.WinEventOutOfContext)
+            finally:
+                self._predicted_hwnd = None
         else:
             self._set_no_window_or_hide()
 
@@ -296,7 +313,7 @@ class ActiveWindowWidget(BaseWidget):
 
     def _update_window_title(self, hwnd: int, win_info: WindowInfo, event: WinEvent) -> None:
         try:
-            if hwnd != GetForegroundWindow():
+            if hwnd != GetForegroundWindow() and hwnd != self._predicted_hwnd:
                 return
             title = win_info["title"]
             process = win_info["process"]

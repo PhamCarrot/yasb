@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -41,3 +42,22 @@ def qapp() -> QApplication:
     app = QApplication.instance()
     _qapp = app if isinstance(app, QApplication) else QApplication([])
     return _qapp
+
+
+@pytest.fixture(autouse=True)
+def no_live_stereo_playback(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """New audio tests must inject playback before any device enumeration."""
+    from PyQt6.QtCore import QObject
+
+    from core.widgets.services.media import stereo_test
+    from core.widgets.services.media.audio_device import AudioOutputState
+
+    attempted: list[str] = []
+
+    def blocked(output: AudioOutputState, parent: QObject) -> stereo_test.TestSink:
+        attempted.append(output.endpoint_id)
+        raise RuntimeError("Real stereo playback is forbidden in unattended tests")
+
+    monkeypatch.setattr(stereo_test, "open_test_sink", blocked)
+    yield
+    assert not attempted, "A test reached the real playback adapter without a fake"

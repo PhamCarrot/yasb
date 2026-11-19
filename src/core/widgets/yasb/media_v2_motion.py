@@ -15,10 +15,12 @@ from PyQt6.QtCore import (
     QPropertyAnimation,
     QRectF,
     QSequentialAnimationGroup,
+    QSize,
     Qt,
 )
 from PyQt6.QtGui import (
     QColor,
+    QFontMetrics,
     QHideEvent,
     QImage,
     QLinearGradient,
@@ -27,6 +29,9 @@ from PyQt6.QtGui import (
     QPalette,
     QResizeEvent,
     QShowEvent,
+    QTextLayout,
+    QTextLine,
+    QTextOption,
 )
 from PyQt6.QtWidgets import QGraphicsEffect, QLabel, QSizePolicy, QStyle, QStyleOption, QWidget
 
@@ -34,7 +39,11 @@ pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
 
 def animate(
-    owner: QObject, name: str, target: Any, duration: int = 250, easing: QEasingCurve.Type = QEasingCurve.Type.OutCubic
+    owner: QObject,
+    name: str,
+    target: Any,
+    duration: int = 250,
+    easing: QEasingCurve | QEasingCurve.Type = QEasingCurve.Type.OutCubic,
 ) -> QPropertyAnimation:
     """Retarget an owned animation from its current presentation value."""
     motions = cast(dict[str, QPropertyAnimation], getattr(owner, "_motion", {}))
@@ -76,25 +85,31 @@ class RevealEffect(QGraphicsEffect):
         offset: tuple[float, float] = (0, 0),
         scale: float = 1.0,
         back: bool = False,
+        easing: QEasingCurve.Type | None = None,
+        opacity: bool = True,
     ) -> None:
         super().__init__(widget)
         self._progress = 1.0
         self._offset = QPointF(*offset)
         self._scale = scale
         self.widget = widget
+        self._opacity = opacity
+        self._delay, self._duration = delay, duration
+        self._exiting = False
         widget.setGraphicsEffect(self)
         self.sequence = QSequentialAnimationGroup(self)
-        self.sequence.addPause(delay)
-        motion = QPropertyAnimation(self, b"progress", self.sequence)
+        self.pause = cast(QPauseAnimation, self.sequence.addPause(delay))
+        motion = self.motion = QPropertyAnimation(self, b"progress", self.sequence)
         motion.setStartValue(0.0)
         motion.setEndValue(1.0)
         motion.setDuration(duration)
-        curve = QEasingCurve(QEasingCurve.Type.OutBack if back else QEasingCurve.Type.OutQuart)
+        curve = QEasingCurve(easing or (QEasingCurve.Type.OutBack if back else QEasingCurve.Type.OutQuart))
         if back:
             curve.setOvershoot(0.8)
+        self._curve = curve
         motion.setEasingCurve(curve)
         self.sequence.addAnimation(motion)
-        self.sequence.finished.connect(self.finish)
+        self.sequence.finished.connect(self._completed)
         self.setEnabled(False)
 
     def _get_progress(self):
@@ -106,11 +121,34 @@ class RevealEffect(QGraphicsEffect):
 
     progress: float = pyqtProperty(float, _get_progress, _set_progress)
 
-    def replay(self):
+    def _run(self, start: float, end: float, delay: int, duration: int, curve: QEasingCurve) -> None:
         self.sequence.stop()
-        self.progress = 0.0
+        self.pause.setDuration(delay)
+        self.motion.setStartValue(start)
+        self.motion.setEndValue(end)
+        self.motion.setDuration(max(1, duration))
+        self.motion.setEasingCurve(curve)
+        self.progress = start
         self.setEnabled(True)
         self.sequence.start()
+
+    def replay(self) -> None:
+        self._exiting = False
+        self._run(0.0, 1.0, self._delay, self._duration, self._curve)
+
+    def resume(self) -> None:
+        self._exiting = False
+        self._run(self.progress, 1.0, 0, round(self._duration * abs(1 - self.progress)), self._curve)
+
+    def conceal(self, delay: int, duration: int, easing: QEasingCurve.Type) -> None:
+        self._exiting = True
+        self._run(self.progress, 0.0, delay, duration, QEasingCurve(easing))
+
+    def _completed(self) -> None:
+        if self._exiting:
+            self.progress = 0.0
+        else:
+            self.finish()
 
     def finish(self):
         self.sequence.stop()
@@ -129,7 +167,8 @@ class RevealEffect(QGraphicsEffect):
             return
         bounds = QRectF(self.widget.rect())
         painter.save()
-        painter.setOpacity(max(0.0, min(1.0, self._progress)))
+        if self._opacity:
+            painter.setOpacity(max(0.0, min(1.0, self._progress)))
         center = bounds.center()
         painter.translate(center + self._offset * (1 - self._progress))
         factor = self._scale + (1 - self._scale) * self._progress
@@ -166,6 +205,10 @@ class MediaText(QLabel):
         self._previous_offset = 0.0
         self._empty = False
         self._distance = 0.0
+        self._ink_layer = QImage()
+        self._fade_gradient: QLinearGradient | None = None
+        self._marquee_layout: QTextLayout | None = None
+        self._measurement: tuple[str, QFontMetrics, int] | None = None
         self._scroll = QSequentialAnimationGroup(self)
         self._pause: QPauseAnimation = cast(QPauseAnimation, self._scroll.addPause(self._scroll_delay))
         assert self._pause is not None
@@ -214,8 +257,9 @@ class MediaText(QLabel):
             self._empty = empty
         self._scroll.stop()
         self.scrollOffset = 0.0
-        width = self.fontMetrics().horizontalAdvance(self.text())
-        self._distance = width + self.fontMetrics().height() * 2.5
+        metrics = self.fontMetrics()
+        width = self._text_width(self.text(), metrics)
+        self._distance = width + metrics.height() * 2.5
         if not self._scrollable or not self.isVisible() or width <= self.contentsRect().width():
             return
         self._pause.setDuration(self._scroll_delay)
@@ -236,6 +280,8 @@ class MediaText(QLabel):
         self._scroll.stop()
         self.scrollOffset = 0.0
         settle(self)
+        self._marquee_layout = None
+        self._ink_layer = QImage()
         super().hideEvent(a0)
 
     def resizeEvent(self, a0: QResizeEvent | None):
@@ -249,6 +295,9 @@ class MediaText(QLabel):
             return None
         super().changeEvent(a0)
         if hasattr(self, "_scroll") and a0.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._marquee_layout = None
+            self._ink_layer = QImage()
+            self._measurement = None
             self.reset_scroll()
 
     def display_text(self, width: float | None = None):
@@ -259,23 +308,85 @@ class MediaText(QLabel):
             return self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, max(0, round(available)))
         return text
 
-    def _draw_text(self, painter: QPainter, text: str, offset: float, opacity: float, shift: float, bounds: QRectF):
+    def _text_width(self, text: str, metrics: QFontMetrics) -> int:
+        measured = self._measurement
+        if measured is None or text != measured[0] or metrics != measured[1]:
+            measured = text, metrics, metrics.horizontalAdvance(text)
+            self._measurement = measured
+        return measured[2]
+
+    def _marquee_line(self, painter: QPainter, text: str) -> QTextLine | None:
+        # Keep Qt's rectangle layout for formatting-sensitive text.
+        font = painter.font()
+        direction = painter.layoutDirection()
+        if (
+            len(text) > 512
+            or not text.isascii()
+            or not text.isprintable()
+            or text != text.strip()
+            or direction == Qt.LayoutDirection.RightToLeft
+            or font.underline()
+            or font.strikeOut()
+            or font.overline()
+        ):
+            return None
+        layout = self._marquee_layout
+        if (
+            layout is None
+            or layout.text() != text
+            or layout.font() != font
+            or layout.textOption().textDirection() != direction
+        ):
+            layout = QTextLayout(text, font, self._ink_layer)
+            layout.setCacheEnabled(True)
+            options = QTextOption(Qt.AlignmentFlag.AlignLeft)
+            options.setTextDirection(direction)
+            layout.setTextOption(options)
+            layout.beginLayout()
+            line = layout.createLine()
+            # Match the rectangle painter's unwrapped single-line layout.
+            line.setLineWidth(0x01000000)
+            line.setPosition(QPointF())
+            layout.endLayout()
+            self._marquee_layout = layout
+        return layout.lineAt(0)
+
+    def _draw_text(
+        self,
+        painter: QPainter,
+        text: str,
+        metrics: QFontMetrics,
+        width: int,
+        offset: float,
+        opacity: float,
+        shift: float,
+        bounds: QRectF,
+    ):
         if not text or opacity <= 0:
             return
         painter.save()
         painter.setOpacity(opacity)
         painter.translate(-offset, shift)
-        width = self.fontMetrics().horizontalAdvance(text)
-        if not self._scrollable and self.elide and text == self.text():
-            text = self.display_text(bounds.width())
-        elif not self._scrollable and self.elide:
-            text = self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, round(bounds.width()))
+        if not self._scrollable and self.elide:
+            text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, round(bounds.width()))
         text_rect = QRectF(0, 0, max(width + 2, bounds.width()), bounds.height())
         alignment = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter if self._scrollable else self.alignment()
+        scrolling = self._scrollable and width > bounds.width()
+        if scrolling and self._mix >= 1:
+            line = self._marquee_line(painter, text)
+            if line is not None:
+                line_height = line.ascent() + line.descent()
+                if line_height <= bounds.height() and line.naturalTextWidth() <= text_rect.width():
+                    y = (bounds.height() - line_height) / 2
+                    repeat = width + metrics.height() * 2.5
+                    line.draw(painter, QPointF(0, y))
+                    line.draw(painter, QPointF(repeat, y))
+                    painter.restore()
+                    return
         painter.drawText(text_rect, alignment, text)
-        if self._scrollable and width > bounds.width():
-            text_rect.translate(width + self.fontMetrics().height() * 2.5, 0)
-            painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        if scrolling:
+            text_rect.translate(width + metrics.height() * 2.5, 0)
+            painter.drawText(text_rect, alignment, text)
         painter.restore()
 
     def paintEvent(self, a0: QPaintEvent | None):
@@ -288,23 +399,27 @@ class MediaText(QLabel):
         bounds = self.contentsRect()
         if bounds.isEmpty():
             return
+        metrics = self.fontMetrics()
+        text = self.text()
+        width = self._text_width(text, metrics)
+        overflow = width > bounds.width()
         # Static labels need neither an intermediate image nor an alpha-mask pass.
-        if self._mix >= 1 and (
-            not self._scrollable or self.fontMetrics().horizontalAdvance(self.text()) <= bounds.width()
-        ):
+        if self._mix >= 1 and (not self._scrollable or not overflow):
             painter.setFont(self.font())
             group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
             painter.setPen(self.palette().color(group, QPalette.ColorRole.WindowText))
             painter.setClipRect(bounds)
             painter.translate(bounds.topLeft())
-            self._draw_text(painter, self.text(), 0, 1, 0, QRectF(0, 0, bounds.width(), bounds.height()))
+            self._draw_text(painter, text, metrics, width, 0, 1, 0, QRectF(0, 0, bounds.width(), bounds.height()))
             return
         # Only overflowing/fading text needs a small composited layer.
         dpr = self.devicePixelRatioF()
-        layer = QImage(
-            round(bounds.width() * dpr), round(bounds.height() * dpr), QImage.Format.Format_ARGB32_Premultiplied
-        )
-        layer.setDevicePixelRatio(dpr)
+        size = QSize(round(bounds.width() * dpr), round(bounds.height() * dpr))
+        if self._ink_layer.size() != size or self._ink_layer.devicePixelRatio() != dpr:
+            self._marquee_layout = None
+            self._ink_layer = QImage(size, QImage.Format.Format_ARGB32_Premultiplied)
+            self._ink_layer.setDevicePixelRatio(dpr)
+        layer = self._ink_layer
         layer.fill(Qt.GlobalColor.transparent)
         ink = QPainter(layer)
         ink.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -312,18 +427,22 @@ class MediaText(QLabel):
         group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
         ink.setPen(self.palette().color(group, QPalette.ColorRole.WindowText))
         local = QRectF(0, 0, bounds.width(), bounds.height())
-        self._draw_text(ink, self._previous, self._previous_offset, 1 - self._mix, -4 * self._mix, local)
-        self._draw_text(ink, self.text(), self._offset, self._mix, 4 * (1 - self._mix), local)
-        overflow = self.fontMetrics().horizontalAdvance(self.text()) > bounds.width()
-        old_overflow = self._mix < 1 and self.fontMetrics().horizontalAdvance(self._previous) > bounds.width()
+        old_width = metrics.horizontalAdvance(self._previous) if self._mix < 1 else 0
+        self._draw_text(
+            ink, self._previous, metrics, old_width, self._previous_offset, 1 - self._mix, -4 * self._mix, local
+        )
+        self._draw_text(ink, text, metrics, width, self._offset, self._mix, 4 * (1 - self._mix), local)
+        old_overflow = old_width > bounds.width()
         if self._scrollable and (overflow or old_overflow):
-            edge = min(12.0, bounds.width() / 4)
-            gradient = QLinearGradient(0, 0, bounds.width(), 0)
-            gradient.setColorAt(0, QColor(0, 0, 0, 0))
-            gradient.setColorAt(edge / bounds.width(), QColor(0, 0, 0, 255))
-            gradient.setColorAt(1 - edge / bounds.width(), QColor(0, 0, 0, 255))
-            gradient.setColorAt(1, QColor(0, 0, 0, 0))
+            if self._fade_gradient is None or self._fade_gradient.finalStop().x() != bounds.width():
+                edge = min(12.0, bounds.width() / 4)
+                gradient = QLinearGradient(0, 0, bounds.width(), 0)
+                gradient.setColorAt(0, QColor(0, 0, 0, 0))
+                gradient.setColorAt(edge / bounds.width(), QColor(0, 0, 0, 255))
+                gradient.setColorAt(1 - edge / bounds.width(), QColor(0, 0, 0, 255))
+                gradient.setColorAt(1, QColor(0, 0, 0, 0))
+                self._fade_gradient = gradient
             ink.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
-            ink.fillRect(local, gradient)
+            ink.fillRect(local, self._fade_gradient)
         ink.end()
         painter.drawImage(bounds.topLeft(), layer)

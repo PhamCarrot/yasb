@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tests.support.source import REPO_ROOT
 from tests.win32.msvc import Build, Toolchain, compile_cpp, run
 
 HEADERS = (
@@ -60,6 +61,12 @@ HEADERS = (
     "dbghelp.h",
     "sddl.h",
     "security.h",
+)
+
+# These exports belong to YASB, not the Windows SDK. Compile the real project
+# declarations as well, so their ctypes signatures receive the same ABI checks.
+PROJECT_HEADERS = tuple(
+    REPO_ROOT / "src/core/widgets/services/media/native" / name for name in ("protocol.h", "transport.h")
 )
 
 MISSING_HEADER_HINT = (
@@ -288,6 +295,7 @@ def _render(items: dict[str, _Item], vendored: str) -> tuple[str, dict[int, str]
     # security.h declares GetUserNameEx only for user-mode callers that define SECURITY_WIN32.
     lines.append("#define SECURITY_WIN32")
     lines += [f"#include <{header}>" for header in HEADERS]
+    lines += [f'#include "{header.as_posix()}"' for header in PROJECT_HEADERS]
     lines += ["namespace vendored {", *vendored.splitlines(), "}  // namespace vendored"]
     line_map: dict[int, str] = {}
 

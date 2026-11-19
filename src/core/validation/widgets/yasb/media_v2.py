@@ -57,9 +57,17 @@ class MediaDiscConfig(CustomBaseModel):
 class MediaEqualizerApoConfig(CustomBaseModel):
     enabled: bool = False
     target_device: Literal["default"] = "default"
+    processor: Literal["graphic_eq", "native"] = "graphic_eq"
+    native_library: str = ""
+    native_sha256: str = ""
     auto_preamp: bool = True
     preamp_db: float = Field(default=0.0, ge=-24.0, le=12.0, allow_inf_nan=False)
-    write_debounce_ms: int = Field(default=100, ge=50, le=500)
+    write_debounce_ms: int = Field(
+        default=100,
+        ge=50,
+        le=500,
+        description="Deprecated and ignored: manual band edits are committed only by Apply.",
+    )
     manage_include: bool = False
 
 
@@ -102,6 +110,101 @@ class MediaProgressConfig(CustomBaseModel):
     show_handle: bool = True
 
 
+class MediaLyricsMarginsConfig(CustomBaseModel):
+    horizontal: int = Field(default=4, ge=0, le=64)
+    vertical: int = Field(default=0, ge=0, le=64)
+    placeholder: int = Field(default=8, ge=0, le=64)
+
+
+class MediaLyricsConfig(CustomBaseModel):
+    alignment: Literal["left", "center", "right"] = "left"
+    center_position: float = Field(default=0.44, ge=0.0, le=1.0, allow_inf_nan=False)
+    lines_before: int = Field(default=-1, ge=-1, le=100)
+    lines_after: int = Field(default=-1, ge=-1, le=100)
+    inactive_opacity: float = Field(default=-1.0, ge=-1.0, le=1.0, allow_inf_nan=False)
+    active_color: str | None = None
+    inactive_color: str | None = None
+    font_family: str = ""
+    font_size: int = Field(default=18, ge=8, le=72)
+    font_weight: Literal[100, 200, 300, 400, 500, 600, 700, 800, 900] = 700
+    margins: MediaLyricsMarginsConfig = Field(default_factory=MediaLyricsMarginsConfig)
+    line_height: int = Field(default=30, ge=0, le=200)
+    line_spacing: int = Field(default=6, ge=0, le=100)
+    animation_duration_ms: int = Field(default=650, ge=0, le=5000)
+    browse_return_ms: int = Field(default=4000, ge=0, le=60000)
+    drag_threshold: int = Field(default=4, ge=1, le=64)
+    auto_lookup: bool = True
+    provider_order: list[Literal["lrclib", "netease", "better_lyrics", "musixmatch"]] = (
+        Field(
+            default_factory=lambda: ["lrclib", "netease", "better_lyrics"],
+            min_length=1,
+            max_length=4,
+            json_schema_extra={"uniqueItems": True},
+        )
+    )
+    better_lyrics_enabled: bool = True
+    musixmatch_enabled: bool = False
+    musixmatch_api_key: str = ""
+    request_spacing_ms: int = Field(default=250, ge=200, le=5000)
+    request_timeout_ms: int = Field(default=10000, ge=1000, le=60000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_reference_names(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        values = dict(cast(dict[str, Any], data))
+        aliases = {
+            "center_ratio": "center_position",
+            "visible_lines_before": "lines_before",
+            "visible_lines_after": "lines_after",
+            "lines_behind": "lines_before",
+            "linesBehind": "lines_before",
+            "linesAfter": "lines_after",
+            "inactiveOpacity": "inactive_opacity",
+            "activeLineColor": "active_color",
+            "inactiveLineColor": "inactive_color",
+            "fontFamily": "font_family",
+            "fontWeight": "font_weight",
+            "lineHeight": "line_height",
+            "lineSpacing": "line_spacing",
+            "animation_ms": "animation_duration_ms",
+            "return_delay_ms": "browse_return_ms",
+            "providers": "provider_order",
+        }
+        for old, new in aliases.items():
+            if old in values and new not in values:
+                values[new] = values.pop(old)
+        providers = values.get("provider_order")
+        if isinstance(providers, list):
+            provider_values = cast(list[object], providers)
+            if len(set(provider_values)) != len(provider_values):
+                raise ValueError("popup.lyrics.provider_order must not contain duplicates")
+        for field_name in ("active_color", "inactive_color"):
+            color = values.get(field_name)
+            if color is not None and not isinstance(color, str):
+                raise ValueError(f"popup.lyrics.{field_name} must be a valid Qt color")
+            if isinstance(color, str) and not QColor(color).isValid():
+                raise ValueError(f"popup.lyrics.{field_name} must be a valid Qt color")
+        return values
+
+    def active_provider_order(self) -> list[str]:
+        private = {
+            "better_lyrics": self.better_lyrics_enabled,
+            "musixmatch": self.musixmatch_enabled and bool(self.musixmatch_api_key.strip()),
+        }
+        active = [provider for provider in self.provider_order if provider not in private or private[provider]]
+        fallback = ["lrclib", "netease"]
+        if self.better_lyrics_enabled:
+            fallback.append("better_lyrics")
+        if self.musixmatch_enabled and self.musixmatch_api_key.strip():
+            fallback.append("musixmatch")
+        return active or fallback
+
+    def provider_credentials(self) -> dict[str, str]:
+        return {"musixmatch": self.musixmatch_api_key.strip()}
+
+
 class MediaControlsConfig(CustomBaseModel):
     size: int = Field(default=30, ge=20, le=96)
 
@@ -134,6 +237,7 @@ class MediaV2PopupConfig(CustomBaseModel):
     time_display: Literal["total", "remaining"] = "total"
     equalizer_position: Literal["top", "bottom"] = "bottom"
     show_separator: bool = True
+    lyrics: MediaLyricsConfig = Field(default_factory=MediaLyricsConfig)
     disc: MediaDiscConfig = Field(default_factory=MediaDiscConfig)
     equalizer: MediaEqualizerConfig = Field(default_factory=MediaEqualizerConfig)
     background: MediaBackgroundConfig = Field(default_factory=MediaBackgroundConfig)

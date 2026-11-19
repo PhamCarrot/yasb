@@ -19,6 +19,7 @@ from core.utils.single_instance import single_instance_lock
 from core.utils.system_colors import SystemColorsService
 from core.utils.update_service import get_update_service, start_update_checker
 from core.watcher import create_observer
+from core.widgets.yasb.media_v2_styles import media_section_fallbacks
 from env import load_env, set_font_engine
 
 
@@ -66,6 +67,9 @@ async def main_async(app: YASBApplication):
 
     # Initialize configuration early after the single instance check
     config, stylesheet = get_config_and_stylesheet()
+    if section_styles := media_section_fallbacks(config.widgets):
+        # Bars apply the user theme on their own widgets, above these defaults.
+        app.setStyleSheet(section_styles + app.styleSheet())
 
     if config.debug:
         enable_debug_logging()
@@ -112,8 +116,14 @@ async def main_async(app: YASBApplication):
         # owning qasync thread before Qt emits aboutToQuit and before the event
         # loop is drained. aboutToQuit remains an idempotent fallback.
         from core.widgets.services.media.backend import MediaBackend
+        from core.widgets.services.media.equalizer_apo import EqualizerApoWriter
+        from core.widgets.services.media.lyrics import LyricsService
+        from core.widgets.services.media.stereo_test import StereoTestService
 
+        await StereoTestService.aclose_shared()
         await MediaBackend.aclose_shared()
+        await LyricsService.aclose_shared()
+        await EqualizerApoWriter.aclose_shared()
         # Cancel async tasks while loop is still running
         current = asyncio.current_task()
         tasks = [t for t in asyncio.all_tasks() if t is not current and not t.done()]

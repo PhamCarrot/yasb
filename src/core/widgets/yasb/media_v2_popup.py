@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PyQt6.QtCore import QEvent, QObject
+from PyQt6.QtCore import QEvent, QObject, QRect
 from PyQt6.QtGui import QHideEvent, QPixmap, QShowEvent
 from PyQt6.QtWidgets import QWidget
 
@@ -17,6 +17,7 @@ from collections import Counter
 from PyQt6.QtCore import QEasingCurve, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QScrollArea,
@@ -44,7 +45,8 @@ from core.widgets.yasb.media_v2_components import (
 from core.widgets.yasb.media_v2_disc import DiscArt
 from core.widgets.yasb.media_v2_equalizer import EqualizerPanel
 from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
-from core.widgets.yasb.media_v2_styles import media_styles
+from core.widgets.yasb.media_v2_sections import MediaSections
+from core.widgets.yasb.media_v2_styles import media_section_key, media_styles
 
 logger = logging.getLogger("MediaV2")
 
@@ -75,6 +77,11 @@ def session_option_labels(sessions: tuple[MediaSessionState, ...]):
     return tuple(labels)
 
 
+def exit_fade_progress(progress: float) -> float:
+    """70ms hold, 170ms fade, then wait for the 500ms child cascade."""
+    return max(0.0, min(1.0, (progress - 0.14) / 0.34)) ** 4
+
+
 class MediaPopup(PopupWidget):
     seek_requested = pyqtSignal(float, object)
     session_selected = pyqtSignal(object)
@@ -96,11 +103,12 @@ class MediaPopup(PopupWidget):
         self.s: Callable[[float], int] = lambda value: round(value * config.scale)
         self._state = None
         self._content_key = None
-        self._seek_identity = None
+        self._seek_identity: tuple[str, int] | None = None
         self._session_options = None
         self._output_service = None
         self._restore_focus_on_dismiss = False
         identify(self, "media-v2-popup", "media-v2-popup")
+        self.setProperty("mediaSectionMetrics", media_section_key(config.scale, self.s(config.border_radius)))
         self.setAccessibleName("Media player")
         if config.use_default_styles:
             self.setStyleSheet(media_styles(config))
@@ -112,17 +120,24 @@ class MediaPopup(PopupWidget):
         self._scroll_area = QScrollArea(self)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll_area.setWidgetResizable(False)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         viewport = self._scroll_area.viewport()
         assert viewport is not None
         identify(viewport, "media-viewport")
+        viewport.setAutoFillBackground(False)
         root.addWidget(self._scroll_area)
         self.border = identify(
             MediaBorder(self.s(config.border_radius), config.scale, options=config.popup.border),
             "media-border",
         )
         top_height = 464 if config.popup.artwork_position == "top" else 224
-        self.border.setFixedSize(self.s(625), self.s(top_height + 42 + (302 if config.popup.show_equalizer else 0)))
+        self._natural_height = self.s(top_height + 42 + (299 if config.popup.show_equalizer else 0))
+        if config.popup.show_equalizer and not config.popup.show_separator:
+            self._natural_height -= self.s(34)
+        self.border.setFixedSize(self.s(625), self._natural_height)
         self._scroll_area.setWidget(self.border)
+        self.border.setAutoFillBackground(False)
         border_layout = QVBoxLayout(self.border)
         border_layout.setContentsMargins(*([self.border.content_inset] * 4))
         self.surface = identify(
@@ -154,7 +169,7 @@ class MediaPopup(PopupWidget):
                 self.art.hide()
             row.addWidget(details, 1)
         detail_layout = QVBoxLayout(details)
-        detail_layout.setContentsMargins(0, 0, 0, self.s(28))
+        detail_layout.setContentsMargins(0, 0, 0, 0)
         detail_layout.setSpacing(self.s(6))
         detail_layout.addStretch()
         scrolling = config.popup.scrolling_label
@@ -197,9 +212,7 @@ class MediaPopup(PopupWidget):
         self.device.setFixedHeight(self.s(22))
         self.device.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         source_row.addWidget(self.device, 1)
-        self._output_service = DefaultAudioOutputService.instance()
-        self._output_service.default_output_changed.connect(self._on_output_changed)
-        self._on_output_changed(self._output_service.state)
+        self._ensure_output_service()
         self.source = MediaButton(output, "media-source")
         self.source.setObjectName("media-source")
         self.source.setFixedHeight(self.s(22))
@@ -281,7 +294,7 @@ class MediaPopup(PopupWidget):
         self.progress.seek_requested.connect(self._finish_seek)
         self._intro.extend(
             (
-                RevealEffect(self.art, 70, 810, scale=0.72, back=True),
+                RevealEffect(self.art, 70, 810, offset=(-self.s(35), self.s(9)), back=True),
                 RevealEffect(self.title, 150, 760, offset=(self.s(25), 0)),
                 RevealEffect(self.artist, 150, 760, offset=(self.s(25), 0)),
                 RevealEffect(output, 150, 760, offset=(self.s(25), 0)),
@@ -299,15 +312,43 @@ class MediaPopup(PopupWidget):
                 config.scale,
                 self.surface,
                 effect_parent=self.surface,
+                effect_radius=self.surface.radius,
             )
+            self.sections = MediaSections(self.equalizer, config.scale, config.popup.lyrics)
+            self.sections.lyrics.seek_requested.connect(self.seek_requested)
             if config.popup.equalizer_position == "top":
                 main.insertWidget(0, self.equalizer)
                 main.insertWidget(1, separator)
             else:
                 main.addWidget(separator)
                 main.addWidget(self.equalizer)
-            self._intro.append(RevealEffect(separator, 310, 660, scale=0.8))
+            self._intro.append(RevealEffect(separator, 310, 660, offset=(0, self.s(12))))
             self._intro.extend(self.equalizer.intro)
+            self._intro.extend(self.sections.audio.intro)
+
+        self._wrapper_intro = RevealEffect(self.surface, 0, 760, scale=0.92, opacity=False)
+        self._intro.insert(0, self._wrapper_intro)
+        self._exit_plan: list[tuple[RevealEffect, int, int, QEasingCurve.Type]] = []
+        for effect in self._intro:
+            spec: tuple[int, int, QEasingCurve.Type]
+            widget = effect.widget
+            if widget is self.surface:
+                spec = (70, 170, QEasingCurve.Type.InQuart)
+            elif widget is self.art:
+                spec = (350, 150, QEasingCurve.Type.InBack)
+            elif widget in (self.title, self.artist, output):
+                spec = (200, 150, QEasingCurve.Type.InCubic)
+            elif widget is self.controls or widget is timeline:
+                spec = (50, 150, QEasingCurve.Type.InBack)
+            elif widget.objectName() == "media-v2-separator":
+                spec = (160, 130, QEasingCurve.Type.InCubic)
+            elif widget.objectName() == "media-equalizer-header":
+                spec = (30, 130, QEasingCurve.Type.InCubic)
+            elif widget.objectName() == "media-presets":
+                spec = (0, 130, QEasingCurve.Type.InBack)
+            else:
+                spec = (0, 150, QEasingCurve.Type.InExpo)
+            self._exit_plan.append((effect, spec[0], spec[1], spec[2]))
 
     def _on_output_changed(self, state: AudioOutputState):
         if not is_valid_qobject(self):
@@ -317,12 +358,32 @@ class MediaPopup(PopupWidget):
         self.device.setText(full_name)
         self.device.setAccessibleName(full_name)
 
+    def _ensure_output_service(self) -> DefaultAudioOutputService:
+        service = self._output_service
+        if service is not None and not (
+            type(service) is DefaultAudioOutputService and (not is_valid_qobject(service) or service.closed)
+        ):
+            return service
+        if service is not None and is_valid_qobject(service):
+            try:
+                service.default_output_changed.disconnect(self._on_output_changed)
+            except RuntimeError, TypeError:
+                pass
+        service = DefaultAudioOutputService.instance()
+        self._output_service = service
+        service.default_output_changed.connect(self._on_output_changed)
+        self._on_output_changed(service.state)
+        return service
+
     def set_state(self, state: MediaState, pixmap: QPixmap):
         old_identity = track_identity(self._state.active) if self._state else None
+        old_revision = self._state.active.seek_revision if self._state and self._state.active else None
         active = state.active
         self._state = state
+        if hasattr(self, "sections"):
+            self.sections.lyrics.set_state(active)
         changed = old_identity != track_identity(active)
-        if changed or not (active and active.is_seekable):
+        if changed or not (active and active.is_seekable) or old_revision != active.seek_revision:
             self.progress.cancel_interaction()
             self._seek_identity = None
         # Timeline snapshots must not rebuild selectors, repaint art or process backgrounds.
@@ -361,6 +422,7 @@ class MediaPopup(PopupWidget):
                 self.setProperty("class", classes)
                 refresh_widget_style(self, self._popup_content)
         self.progress.setEnabled(bool(active and active.is_seekable))
+        self.progress.set_playing(bool(active and active.is_playing))
         velocity = 0.0
         if active and active.is_playing and active.duration:
             velocity = active.playback.rate / active.duration
@@ -399,28 +461,38 @@ class MediaPopup(PopupWidget):
 
         name = active.player.application_name if active else "Offline"
         self.source.setText("Via " + name)
+        self.selector.set_display_label(name)
         pinned = bool(state.manual_session_id)
         self.source.set_base_classes("media-source", "pinned" if pinned else "automatic")
         self.selector.set_mode("pinned" if pinned else "automatic")
-        self.source.setEnabled(bool(sessions))
+        multiple = len(sessions) > 1
+        self.source.setEnabled(False)
+        self.source.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.source.setAccessibleDescription(
             ("Pinned" if pinned else "Automatic selection") + f"; active player: {name}"
         )
         self.selector.setAccessibleDescription(self.source.accessibleDescription())
-        self.selector.hide()
-        self.source.show()
+        self.selector.setVisible(multiple)
+        self.source.setVisible(not multiple)
+        if not multiple and self.selector.menu_active:
+            self.selector.hidePopup()
 
     def _open_session_menu(self):
-        if not self.source.isEnabled() or self.selector.count() <= 1:
+        if self.selector.count() <= 2:
             return
-        self.selector.open_at(self.source)
+        self.selector.open_at(self.selector)
 
     def _select_session(self, index: int):
         self.progress.cancel_interaction()
         self.session_selected.emit(self.selector.itemData(index))
 
     def _begin_seek(self):
-        self._seek_identity = track_identity(self._state.active) if self._state else None
+        active = self._state.active if self._state else None
+        self._seek_identity = (
+            (active.session_id, active.seek_revision)
+            if active and active.is_seekable and active.seek_revision is not None
+            else None
+        )
 
     def _preview_seek(self, fraction: float):
         active = self._state.active if self._state else None
@@ -433,21 +505,61 @@ class MediaPopup(PopupWidget):
             active
             and active.is_seekable
             and active.duration is not None
-            and self._seek_identity == track_identity(active)
+            and self._seek_identity == (active.session_id, active.seek_revision)
         ):
             self.seek_requested.emit(fraction * active.duration, self._seek_identity)
         self._seek_identity = None
 
+    def _work_area(self) -> QRect | None:
+        parent = self.parentWidget()
+        screen = QApplication.screenAt(parent.mapToGlobal(parent.rect().center())) if parent is not None else None
+        if screen is None:
+            screen = parent.screen() if parent is not None else self.screen()
+        return screen.availableGeometry() if screen is not None else None
+
+    def _bounded_position(self, position: QPoint) -> QPoint:
+        area = self._work_area()
+        if area is None or area.isEmpty():
+            return QPoint(position)
+        return QPoint(
+            max(area.left(), min(position.x(), area.right() - self.width() + 1)),
+            max(area.top(), min(position.y(), area.bottom() - self.height() + 1)),
+        )
+
+    def setPosition(
+        self, alignment: str = "left", direction: str = "down", offset_left: int = 0, offset_top: int = 0
+    ) -> None:
+        super().setPosition(alignment, direction, offset_left, offset_top)
+        self.move(self._bounded_position(self.pos()))
+
+    def _fit_viewport(self):
+        natural = self.border.size()
+        area = self._work_area()
+        if area is None or area.isEmpty():
+            self.setFixedSize(natural)
+            return
+        width, height = min(natural.width(), area.width()), min(natural.height(), area.height())
+        vertical, horizontal = self._scroll_area.verticalScrollBar(), self._scroll_area.horizontalScrollBar()
+        assert vertical is not None and horizontal is not None
+        # Reserve the real scrollbar gutter when the other axis can still fit.
+        if natural.height() > height and natural.width() <= area.width():
+            width = min(area.width(), natural.width() + vertical.sizeHint().width())
+        if natural.width() > width and natural.height() <= area.height():
+            height = min(area.height(), natural.height() + horizontal.sizeHint().height())
+        self.setFixedSize(width, height)
+
     def open_at_parent(self, *, focus_first: bool = False):
         self._restore_focus_on_dismiss = False
+        if hasattr(self, "sections"):
+            self.sections.resume(preserve_motion=self.isVisible() and self._is_closing)
         self.border.ensurePolished()
         border_layout = self.border.layout()
         assert border_layout is not None
         border_layout.activate()
-        self.border.setFixedHeight(border_layout.totalSizeHint().height())
+        self.border.setFixedHeight(max(self._natural_height, border_layout.minimumSize().height()))
         if hasattr(self, "equalizer"):
             self.equalizer.sync_effect_overlay()
-        self.setFixedSize(self.border.size())
+        self._fit_viewport()
         self.setPosition(
             alignment=self.config.popup.alignment,
             direction=self.config.popup.direction,
@@ -456,9 +568,14 @@ class MediaPopup(PopupWidget):
         )
         self._open_pos = QPoint(self.pos())
         direction_sign = 1 if self.config.popup.direction == "up" else -1
-        self._closed_pos = QPoint(self._open_pos.x(), self._open_pos.y() + self.s(12) * direction_sign)
+        self._closed_pos = self._bounded_position(
+            QPoint(self._open_pos.x(), self._open_pos.y() + self.s(12) * direction_sign)
+        )
         if self.isVisible():
             self._fade_animation.stop()
+            for effect in self._intro:
+                if effect.widget.isVisible():
+                    effect.resume()
             self._is_closing = False
             self._fade_animation.setDuration(760)
             self._fade_animation.setEasingCurve(QEasingCurve.Type.OutQuart)
@@ -474,6 +591,7 @@ class MediaPopup(PopupWidget):
             target = next((item for item in targets if item.isVisible() and item.isEnabled()), None)
             if target is not None:
                 target.setFocus(Qt.FocusReason.PopupFocusReason)
+                self._scroll_area.ensureWidgetVisible(target, 0, 0)
 
     def showEvent(self, a0: QShowEvent | None):
         if a0 is None:
@@ -485,29 +603,47 @@ class MediaPopup(PopupWidget):
         for effect in self._intro:
             if effect.widget.isVisible():
                 effect.replay()
-        if "output" in self.config.popup.detail_order and self._output_service is not None:
-            self._output_service.request_refresh()
+        if "output" in self.config.popup.detail_order:
+            self._ensure_output_service().request_refresh()
 
     def hide_animated(self, restore_focus: bool = False):
         self._restore_focus_on_dismiss = self._restore_focus_on_dismiss or bool(restore_focus)
+        self.selector.hidePopup()
         if self._is_closing or not self.isVisible():
             return
+        if hasattr(self, "equalizer"):
+            self.sections.suspend(preserve_motion=True)
+            self.sections.finish()
         self.progress.cancel_interaction()
         self._seek_identity = None
-        self._fade_animation.setDuration(180)
-        animate(self, "pos", self._closed_pos, 180, QEasingCurve.Type.InCubic)
-        super().hide_animated()
+        for effect, delay, duration, easing in self._exit_plan:
+            if effect.widget.isVisible():
+                effect.conceal(delay, duration, easing)
+        self._fade_animation.stop()
+        self._is_closing = True
+        self._fade_animation.setDuration(500)
+        curve = QEasingCurve()
+        curve.setCustomType(exit_fade_progress)
+        self._fade_animation.setEasingCurve(curve)
+        self._fade_animation.setStartValue(self.windowOpacity())
+        self._fade_animation.setEndValue(0.0)
+        self._fade_animation.start()
+        animate(self, "pos", self._closed_pos, 500, curve)
 
     def event(self, a0: QEvent | None):
         if a0 is None:
             return False
-        if a0.type() == QEvent.Type.WindowDeactivate and hasattr(self, "selector") and self.selector.menu_active:
+        if a0.type() == QEvent.Type.WindowDeactivate and (hasattr(self, "selector") and self.selector.menu_active):
             return False
         return super().event(a0)
 
     def eventFilter(self, a0: QObject | None, a1: QEvent | None):
         if a1 is None:
             return False
+        if a1.type() == QEvent.Type.FocusIn and isinstance(a0, QWidget) and self.border.isAncestorOf(a0):
+            if hasattr(self, "sections"):
+                self.sections.ensure_control_visible(a0)
+            self._scroll_area.ensureWidgetVisible(a0, 0, 0)
         if self.selector.menu_active:
             return False
         return super().eventFilter(a0, a1)
@@ -515,6 +651,10 @@ class MediaPopup(PopupWidget):
     def hideEvent(self, a0: QHideEvent | None):
         if a0 is None:
             return None
+        self.selector.hidePopup()
+        if hasattr(self, "sections"):
+            self.sections.suspend()
+            self.sections.finish()
         settle(self)
         for effect in self._intro:
             effect.finish()

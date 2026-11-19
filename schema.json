@@ -8496,6 +8496,25 @@
           "title": "Target Device",
           "type": "string"
         },
+        "processor": {
+          "default": "graphic_eq",
+          "enum": [
+            "graphic_eq",
+            "native"
+          ],
+          "title": "Processor",
+          "type": "string"
+        },
+        "native_library": {
+          "default": "",
+          "title": "Native Library",
+          "type": "string"
+        },
+        "native_sha256": {
+          "default": "",
+          "title": "Native Sha256",
+          "type": "string"
+        },
         "auto_preamp": {
           "default": true,
           "title": "Auto Preamp",
@@ -8510,6 +8529,7 @@
         },
         "write_debounce_ms": {
           "default": 100,
+          "description": "Deprecated and ignored: manual band edits are committed only by Apply.",
           "maximum": 500,
           "minimum": 50,
           "title": "Write Debounce Ms",
@@ -8911,6 +8931,219 @@
         "options"
       ],
       "title": "MediaLiteWidgetEntry",
+      "type": "object"
+    },
+    "MediaLyricsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "alignment": {
+          "default": "left",
+          "enum": [
+            "left",
+            "center",
+            "right"
+          ],
+          "title": "Alignment",
+          "type": "string"
+        },
+        "center_position": {
+          "default": 0.44,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Center Position",
+          "type": "number"
+        },
+        "lines_before": {
+          "default": -1,
+          "maximum": 100,
+          "minimum": -1,
+          "title": "Lines Before",
+          "type": "integer"
+        },
+        "lines_after": {
+          "default": -1,
+          "maximum": 100,
+          "minimum": -1,
+          "title": "Lines After",
+          "type": "integer"
+        },
+        "inactive_opacity": {
+          "default": -1.0,
+          "maximum": 1.0,
+          "minimum": -1.0,
+          "title": "Inactive Opacity",
+          "type": "number"
+        },
+        "active_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Color"
+        },
+        "inactive_color": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Inactive Color"
+        },
+        "font_family": {
+          "default": "",
+          "title": "Font Family",
+          "type": "string"
+        },
+        "font_size": {
+          "default": 18,
+          "maximum": 72,
+          "minimum": 8,
+          "title": "Font Size",
+          "type": "integer"
+        },
+        "font_weight": {
+          "default": 700,
+          "enum": [
+            100,
+            200,
+            300,
+            400,
+            500,
+            600,
+            700,
+            800,
+            900
+          ],
+          "title": "Font Weight",
+          "type": "integer"
+        },
+        "margins": {
+          "$ref": "#/$defs/MediaLyricsMarginsConfig"
+        },
+        "line_height": {
+          "default": 30,
+          "maximum": 200,
+          "minimum": 0,
+          "title": "Line Height",
+          "type": "integer"
+        },
+        "line_spacing": {
+          "default": 6,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Line Spacing",
+          "type": "integer"
+        },
+        "animation_duration_ms": {
+          "default": 650,
+          "maximum": 5000,
+          "minimum": 0,
+          "title": "Animation Duration Ms",
+          "type": "integer"
+        },
+        "browse_return_ms": {
+          "default": 4000,
+          "maximum": 60000,
+          "minimum": 0,
+          "title": "Browse Return Ms",
+          "type": "integer"
+        },
+        "drag_threshold": {
+          "default": 4,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Drag Threshold",
+          "type": "integer"
+        },
+        "auto_lookup": {
+          "default": true,
+          "title": "Auto Lookup",
+          "type": "boolean"
+        },
+        "provider_order": {
+          "items": {
+            "enum": [
+              "lrclib",
+              "netease",
+              "better_lyrics",
+              "musixmatch"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Provider Order",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "better_lyrics_enabled": {
+          "default": true,
+          "title": "Better Lyrics Enabled",
+          "type": "boolean"
+        },
+        "musixmatch_enabled": {
+          "default": false,
+          "title": "Musixmatch Enabled",
+          "type": "boolean"
+        },
+        "musixmatch_api_key": {
+          "default": "",
+          "title": "Musixmatch Api Key",
+          "type": "string"
+        },
+        "request_spacing_ms": {
+          "default": 250,
+          "maximum": 5000,
+          "minimum": 200,
+          "title": "Request Spacing Ms",
+          "type": "integer"
+        },
+        "request_timeout_ms": {
+          "default": 10000,
+          "maximum": 60000,
+          "minimum": 1000,
+          "title": "Request Timeout Ms",
+          "type": "integer"
+        }
+      },
+      "title": "MediaLyricsConfig",
+      "type": "object"
+    },
+    "MediaLyricsMarginsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "horizontal": {
+          "default": 4,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Horizontal",
+          "type": "integer"
+        },
+        "vertical": {
+          "default": 0,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Vertical",
+          "type": "integer"
+        },
+        "placeholder": {
+          "default": 8,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Placeholder",
+          "type": "integer"
+        }
+      },
+      "title": "MediaLyricsMarginsConfig",
       "type": "object"
     },
     "MediaMenuConfig": {
@@ -9420,6 +9653,9 @@
           "default": true,
           "title": "Show Separator",
           "type": "boolean"
+        },
+        "lyrics": {
+          "$ref": "#/$defs/MediaLyricsConfig"
         },
         "disc": {
           "$ref": "#/$defs/MediaDiscConfig"

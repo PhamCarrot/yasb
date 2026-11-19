@@ -17,6 +17,7 @@ from PIL import Image
 from PyQt6.QtCore import QObject, pyqtSignal
 from winrt.windows.media.control import GlobalSystemMediaTransportControlsSession
 
+from core.utils.qobject import is_valid_qobject
 from core.widgets.services.media.backend import MediaBackend
 from core.widgets.services.media.model import MediaSessionState, MediaState, PlaybackState
 
@@ -54,6 +55,8 @@ class SessionState:
         self.controls_play_enabled = caps.can_play_pause
         self.controls_next_enabled = caps.can_next
         self.timeline_enabled = caps.can_seek
+        self.seek_revision = snapshot.seek_revision
+        self.is_seekable = snapshot.is_seekable
         self.controls_shuffle_enabled = caps.can_shuffle
         self.controls_repeat_enabled = caps.can_repeat
         self.is_shuffle_active = snapshot.playback.shuffle or False
@@ -91,9 +94,34 @@ class WindowsMedia(QObject, metaclass=QSingleton):
         # Defer initial publication until the constructing widget connects its slots.
         asyncio.get_running_loop().call_soon(self.force_update)
 
+    def _disconnect_backend(self, backend: MediaBackend) -> None:
+        if not is_valid_qobject(backend):
+            return
+        try:
+            backend.state_changed.disconnect(self._on_state)
+        except RuntimeError, TypeError:
+            pass
+
+    def _ensure_backend(self, *, publish: bool = False) -> MediaBackend:
+        backend = self.backend
+        if is_valid_qobject(backend) and not backend.closed:
+            return backend
+        shared = MediaBackend.shared_instance()
+        if shared is None or shared is backend:
+            return backend
+        self._disconnect_backend(backend)
+        backend = MediaBackend.shared()
+        self.backend = backend
+        backend.state_changed.connect(self._on_state)
+        self._last_state = None
+        if publish:
+            self._on_state(backend.state, force=True)
+        return backend
+
     @property
     def current_session(self) -> SessionState | None:
-        return self._trackers.get(self.backend.state.active_session_id or "")
+        backend = self._ensure_backend(publish=True)
+        return self._trackers.get(backend.state.active_session_id or "")
 
     def _on_state(self, state: MediaState, force: bool = False):
         old = self._last_state
@@ -132,31 +160,36 @@ class WindowsMedia(QObject, metaclass=QSingleton):
             self.current_session_changed.emit()
 
     def force_update(self):
-        self._on_state(self.backend.state, force=True)
+        backend = self._ensure_backend()
+        self._on_state(backend.state, force=True)
 
     def switch_current_session(self, direction: int):
-        return self.backend.switch_session(direction)
+        return self._ensure_backend().switch_session(direction)
 
     def play_pause(self):
-        return self.backend.play_pause()
+        return self._ensure_backend().play_pause()
 
     def prev(self):
-        return self.backend.previous()
+        return self._ensure_backend().previous()
 
     def next(self):
-        return self.backend.next()
+        return self._ensure_backend().next()
 
     def toggle_shuffle(self):
-        active = self.backend.state.active
-        return self.backend.set_shuffle(not active.playback.shuffle if active else False)
+        backend = self._ensure_backend()
+        active = backend.state.active
+        return backend.set_shuffle(not active.playback.shuffle if active else False)
 
     def cycle_repeat(self):
-        active = self.backend.state.active
+        backend = self._ensure_backend()
+        active = backend.state.active
         current = active.playback.repeat if active else 0
-        return self.backend.set_repeat(0 if current is None else {0: 2, 2: 1, 1: 0}.get(current, 0))
+        return backend.set_repeat(0 if current is None else {0: 2, 2: 1, 1: 0}.get(current, 0))
 
-    async def seek_to_position(self, position: float):
-        return await self.backend.seek(position)
+    def seek_to_position(self, position: float, *, expected_revision: int | None = None):
+        return self._ensure_backend().seek(position, expected_revision=expected_revision)
 
     def _on_quit(self):
-        self.backend.close()
+        backend = self.backend
+        if is_valid_qobject(backend):
+            backend.close()

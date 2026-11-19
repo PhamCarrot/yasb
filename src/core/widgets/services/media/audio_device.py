@@ -17,6 +17,8 @@ from pycaw.pycaw import AudioUtilities, EDataFlow, ERole
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
+from core.utils.qobject import is_valid_qobject
+
 logger = logging.getLogger("AudioOutputService")
 _ENDPOINT_GUID_RE = re.compile(r"(\{[0-9a-fA-F-]{36}\})$")
 
@@ -93,13 +95,17 @@ class DefaultAudioOutputService(QObject):
     @classmethod
     def instance(cls) -> DefaultAudioOutputService:
         with cls._instance_lock:
-            if cls._instance is None:
+            if cls._instance is None or not is_valid_qobject(cls._instance) or cls._instance._closed:
                 cls._instance = cls()
             return cls._instance
 
     @property
     def state(self) -> AudioOutputState:
         return self._state
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def request_refresh(self, force: bool = False) -> None:
         if not self._closed:

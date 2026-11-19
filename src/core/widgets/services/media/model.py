@@ -147,6 +147,9 @@ class MediaSessionState:
     timeline: Timeline = field(default_factory=Timeline)
     metadata_ready: bool = False
     artwork_pending: bool = False
+    # Successful read for the latest observed metadata event; None forbids seek
+    # while retaining the previous presentation during refresh/failure.
+    seek_revision: int | None = None
 
     @property
     def session_id(self) -> str:
@@ -205,7 +208,7 @@ class MediaSessionState:
 
     @property
     def is_seekable(self) -> bool:
-        return self.capabilities.can_seek and self.progress is not None
+        return self.seek_revision is not None and self.capabilities.can_seek and self.progress is not None
 
 
 @dataclass(frozen=True)
