@@ -130,7 +130,7 @@ media_v2:
           placeholder: 8
         line_height: 30
         line_spacing: 6
-        animation_duration_ms: 650
+        animation_duration_ms: 320
         browse_return_ms: 4000
         drag_threshold: 4
         auto_lookup: true
@@ -148,7 +148,7 @@ media_v2:
         glow: true
         rhythm_strength: 1.0
         glow_strength: 1.0
-        framerate: 30
+        framerate: 60
 
       equalizer:
         preset: "Flat"
@@ -361,11 +361,11 @@ commands still use the captured media session and seek revision.
 | `margins` | object | See below | — | Lyric row and placeholder margins. |
 | `line_height` | integer | `30` | `0–200` | Minimum lyric row height in logical pixels. |
 | `line_spacing` | integer | `6` | `0–100` | Spacing between lyric rows and placeholder controls. |
-| `animation_duration_ms` | integer | `650` | `0–5000` ms | Line and scroll animation duration. |
+| `animation_duration_ms` | integer | `320` | `0–5000` ms | Line and scroll animation duration. |
 | `browse_return_ms` | integer | `4000` | `0–60000` ms | Delay before browsing returns to the playing line. |
 | `drag_threshold` | integer | `4` | `1–64` px | Pointer movement needed to start lyric browsing. |
 | `auto_lookup` | boolean | `true` | — | Start provider lookup when Lyrics is selected. |
-| `provider_order` | list | `["lrclib", "netease", "better_lyrics"]` | Unique provider names | Provider sequence for bounded fallback lookup. LRCLIB, NetEase, Better Lyrics and optional Musixmatch are accepted. The configured order is used after disabled Musixmatch is removed. If none remain active, the default active chain is used. |
+| `provider_order` | list | `["lrclib", "netease", "better_lyrics"]` | Unique provider names | Lookup tries enabled routes in the configured order. If every configured route is disabled, it uses the default active chain. |
 | `better_lyrics_enabled` | boolean | `true` | — | Allow the documented Better Lyrics API route. |
 | `musixmatch_enabled` | boolean | `false` | — | Opt in to Musixmatch requests. |
 | `musixmatch_api_key` | string | `""` | — | API key for the official Musixmatch API. |
@@ -394,8 +394,8 @@ explicit API key.
 Lyrics lookup starts only while the popup is visible and the Lyrics tab is
 selected. The default order is LRCLIB, NetEase and Better Lyrics. Musixmatch
 can be placed anywhere in `provider_order` when its opt-in key is complete. The
-effective sequence keeps the configured order after disabled Musixmatch is
-filtered. If filtering removes every configured route, the default active chain
+effective sequence skips Better Lyrics when disabled and Musixmatch when disabled
+or missing its key. If filtering removes every configured route, the default active chain
 is used. Missing artist metadata prevents automatic lookup.
 
 Responses are limited to 1 MiB, 5000 rows, 16384 characters per row and 30000
@@ -404,7 +404,8 @@ unsynchronized plain lyrics have distinct presentations, and missing timing is
 not invented. The lyric view exposes source and format warnings through its
 tooltip and accessible description.
 
-Timed lyrics follow the current line. Wheel, drag or keyboard browsing pauses
+Timed lyrics highlight the active line as follow-scroll begins. The separate
+highlight animation runs when the list is stationary. Wheel, drag or keyboard browsing pauses
 follow for `browse_return_ms`; right-click resumes it immediately. Clicking a
 timed line, or selecting it with the arrow keys and pressing Enter, requests a
 seek when the player allows it. Track or source changes, metadata refresh,
@@ -438,7 +439,7 @@ The popup artwork is rendered as a vinyl-style animated disc.
 | `glow` | boolean | `true` | — | Enable reactive glow. |
 | `rhythm_strength` | float | `1.0` | `0–3` | Multiplier for reactive disc motion. |
 | `glow_strength` | float | `1.0` | `0–3` | Multiplier for reactive glow. |
-| `framerate` | integer | `30` | `15–60` FPS | Update rate for disc/reactive effects. |
+| `framerate` | integer | `60` | `15–60` FPS | Target update rate for disc/reactive effects. An explicit value overrides the default. |
 
 The visualizer/rhythm/glow effects use YASB's Windows loopback audio capture and shared FFT service. Capture is attached while the popup disc is visible and active playback is occurring.
 
@@ -559,11 +560,11 @@ the controls intentionally affect only the Media V2 display.
 
 ## Manual changes and Apply
 
-Moving a band or releasing its slider changes a draft only. **Apply** commits the complete curve. Closing the popup or leaving the Equalizer section discards unsubmitted edits. There is no legacy autosave mode; `write_debounce_ms` remains readable for configuration compatibility and has no effect.
+Moving a band or releasing its slider changes a draft only. **Apply** commits the complete curve. Returning to the preset values while dragging holds the header steady until release. Closing the popup or leaving the Equalizer section discards unsubmitted edits. There is no legacy autosave mode; `write_debounce_ms` remains readable for configuration compatibility and has no effect.
 
 Preset buttons remain immediate actions. Popups using the same managed file share committed/applied state; a second popup cannot overwrite or cancel another popup's active draft. Closing the editing popup releases its draft lease. Output-device changes retarget the shared committed curve, not an unsubmitted draft.
 
-**Saved** means the managed configuration was persisted successfully; it does not prove that Equalizer APO is active on the endpoint. Failed writes retain the requested curve and show **Retry**. With the visual backend the button says **Visual only**, and no audio settings are written.
+**Saved** means the managed configuration was persisted successfully; it does not prove that Equalizer APO is active on the endpoint. Failed writes retain the requested curve and show **Retry**. A clean header hides the Apply action. The visual backend stores the curve for display only.
 
 ## Native processor
 
@@ -616,7 +617,7 @@ config.txt.yasb-backup
 
 - Equalizer APO must already be installed and configured for the Windows output device.
 - Media V2 currently supports only `target_device: "default"`.
-- Changing the Windows default output causes Media V2 to retarget the current visible EQ curve.
+- Changing the Windows default output retargets the committed EQ curve. Manual edits take effect after Apply.
 - The `graphic_eq` processor writes a device-specific 10-band `GraphicEQ`. The `native` processor writes its validated native route payload instead.
 - Existing custom Equalizer APO filters remain active and can stack with the Media V2 EQ.
 - Peace is deliberately not rewritten. If Peace is detected, the two processing chains can stack.
@@ -630,7 +631,7 @@ config.txt.yasb-backup
 
 ## Popup layout and packaging
 
-The standard popup targets 625x565 logical pixels at `scale: 1`. The lower
+The standard popup targets 625x569 logical pixels at `scale: 1`. The lower
 section has a 235-pixel preferred viewport and negotiates down within that
 shell. The canonical layout keeps the 155-pixel EQ band row, the two-row preset
 box and the tab strip reachable. Larger custom styles can use the section's
@@ -642,21 +643,31 @@ swap and dynamics. The Dynamic control lives in the lower-section header. When
 it is active, the manual EQ page is dimmed and a page-scoped overlay blocks
 manual edits until the mode changes.
 
-Popup controls use staggered entrance and a 500 ms cascading exit. Leaving a
-page or starting a close cancels active gestures and lyric demand, and reopening
-during the exit reverses from the current presentation. These are presentation
-states and do not confirm endpoint processing.
+The popup moves and fades in over 760 ms. Artwork, metadata, transport controls,
+divider, header, individual bands and presets enter in sequence. Closing takes
+500 ms. Reopening during an exit continues from the current position and opacity.
+Lower-section pages slide for 400 ms and crossfade for 250 ms. Audio reveals
+its balance, channel and dynamics cards in order. Leaving a page cancels active
+gestures and releases lyric demand. Lower controls expose status through accessible
+descriptions.
+
+The output device and the single-player “Via …” caption are centered in their
+badges. With multiple players, the selector aligns its caption to the right and
+reserves room for its arrow. All three shorten long names. A preset moves the visible EQ handles over
+350 ms at the default effect speed. A second selection continues from the
+displayed positions. Manual drags still edit a draft until Apply.
 
 The optional native DSP build is x64-only and is separate from the ordinary
-YASB executable and MSI. The ordinary build from `src` is:
+YASB executable and MSI. To build and run the application from `src`:
 
 ```powershell
 python build.py build
-python build.py bdist_msi
+.\dist\yasb.exe
 ```
 
-`build.py` detects x64 or ARM64, selects the matching tray-hook and Everything
-DLL, and writes the MSI under `src/dist/out/` with an `x64` or `aarch64` suffix.
+`build.py` detects x64 or ARM64 and selects the matching tray-hook and Everything
+DLL. To create an installer separately, run `python build.py bdist_msi` from
+`src`. The MSI appears in `src/dist/out/` with an `x64` or `aarch64` suffix.
 The frozen package includes this guide, the visualizer-label guide and the
 root `schema.json`.
 

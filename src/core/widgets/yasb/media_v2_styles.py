@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from core.validation.widgets.yasb.media_v2 import MediaLyricsConfig, MediaV2Config
+from settings import SCRIPT_PATH
 
 """Built-in Media V2 QSS using normal YASB class hierarchy and Qt states."""
+
+_CHEVRON = (Path(SCRIPT_PATH) / "assets/images/media-player-chevron.svg").as_posix()
+_PLAYER_STYLES = f"""
+.media-v2-popup .media-source {{ text-align: center; }}
+.media-v2-popup .media-player-selector::down-arrow {{
+    image: url("{_CHEVRON}"); width: 1em; height: 1em;
+}}
+"""
 
 
 def media_section_key(scale: float, radius: int) -> str:
@@ -16,6 +26,7 @@ def media_section_key(scale: float, radius: int) -> str:
 
 def media_section_fallbacks(widgets: Mapping[str, str | dict[str, Any]]) -> str:
     metrics: dict[tuple[float, int], MediaLyricsConfig] = {}
+    player_styles = ""
     for widget in widgets.values():
         if not isinstance(widget, dict) or widget.get("type") != "yasb.media_v2.MediaWidgetV2":
             continue
@@ -23,9 +34,11 @@ def media_section_fallbacks(widgets: Mapping[str, str | dict[str, Any]]) -> str:
             config = MediaV2Config.model_validate(widget.get("options", {}))
         except ValidationError:
             continue  # WidgetBuilder owns reporting invalid widgets.
-        if not config.use_default_styles and config.popup.show_equalizer:
-            metrics.setdefault((config.scale, round(config.border_radius * config.scale)), config.popup.lyrics)
-    return "".join(
+        if not config.use_default_styles:
+            player_styles = _PLAYER_STYLES
+            if config.popup.show_equalizer:
+                metrics.setdefault((config.scale, round(config.border_radius * config.scale)), config.popup.lyrics)
+    return player_styles + "".join(
         media_section_styles(
             scale,
             radius,
@@ -49,14 +62,14 @@ def media_section_styles(
     rules = f"""
 .media-v2-popup .media-section-page, .media-v2-popup .media-section-viewport,
 .media-v2-popup .media-audio, .media-v2-popup .equalizer-body {{ background: transparent; border: none; }}
-.media-v2-popup .media-section-tabs {{ background: #313244; border-radius: {radius}px; }}
+.media-v2-popup .media-section-tabs {{ background: #313244; border-radius: {radius}px; padding: {s(1)}px; }}
 .media-v2-popup .media-section-tabs::tab {{
     color: #a6adc8; background: transparent; border: none; border-radius: 0;
-    padding: 0 {s(8)}px; min-height: {s(26)}px; font-size: {s(11.5)}px;
+    padding: 0 {s(5)}px; margin: {s(1)}px 0; min-height: {s(24)}px; font-size: {s(11.5)}px;
 }}
 .media-v2-popup .media-section-tabs::tab:selected {{ background: #cba6f7; color: #1e1e2e; }}
-.media-v2-popup .media-section-tabs::tab:first {{ border-top-left-radius: {radius}px; border-bottom-left-radius: {radius}px; }}
-.media-v2-popup .media-section-tabs::tab:last {{ border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px; }}
+.media-v2-popup .media-section-tabs::tab:first {{ margin-left: {s(1)}px; border-top-left-radius: {radius}px; border-bottom-left-radius: {radius}px; }}
+.media-v2-popup .media-section-tabs::tab:last {{ margin-right: {s(1)}px; border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px; }}
 .media-v2-popup .media-section-tabs::tab:focus {{ border: {s(1)}px solid #cdd6f4; }}
 .media-v2-popup .media-audio QLabel, .media-v2-popup .media-audio QCheckBox {{ color: #cdd6f4; font-size: {s(12)}px; }}
 .media-v2-popup .media-audio .audio-status {{ color: #a6adc8; font-size: {s(11)}px; }}
@@ -122,6 +135,7 @@ def media_styles(config: MediaV2Config):
     radius = s(config.border_radius)
     font = config.font_family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
     return f"""
+{_PLAYER_STYLES}
 .media-v2-widget, .media-v2-popup, #media-v2, #media-v2-popup {{
     color: #cdd6f4; background: transparent;
     font-family: "{font}", "Cascadia Mono", "Consolas";

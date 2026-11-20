@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import PyQt6.sip as sip
 import pytest
-from PyQt6.QtCore import QObject, QPoint, QRect, Qt, pyqtSignal
+from PyQt6.QtCore import QDeadlineTimer, QObject, QPoint, QRect, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPalette, QPixmap
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
@@ -292,8 +292,14 @@ def test_follow_browse_timeout_and_right_click(qapp: QApplication) -> None:
     try:
         assert view._return.interval() == 4000
         view.set_position(25000, ("session", 1))
-        assert view._scroll_motion is not None and view._scroll_motion.duration() == 650
-        view._scroll_motion.setCurrentTime(650)
+        assert view._scroll_motion is not None and view._scroll_motion.duration() == 320
+        assert view._line_motion.state().name == "Stopped"
+        assert view.line_appearance(25) == (1, 1, 1)
+        motion = view._scroll_motion
+        motion.setCurrentTime(80)
+        view.follow()
+        assert view._scroll_motion is motion and motion.currentTime() == 80
+        view._scroll_motion.setCurrentTime(320)
         rect = view.visualRect(view.rows.index(26))
         assert abs(rect.center().y() - view.canvas.height() * 0.44) <= 2
         view.browse()
@@ -431,16 +437,16 @@ def test_large_document_retains_bounded_layouts_and_native_children(qapp: QAppli
         assert len(view.findChildren(QWidget)) < 30
         assert not view.grab().isNull()
         view.set_position(4998000, ("session", 1))
-        # Batched Qt layout deliberately spans event-loop turns. Wait for the
-        # target's geometry, then check the exact650ms follow result.
-        for _ in range(100):
-            if not view.visualRect(view.rows.index(4999)).isEmpty():
-                break
-            qt_test.qWait(20)
-        assert not view.visualRect(view.rows.index(4999)).isEmpty()
+        target = view.rows.index(4999)
+        trailing_spacer = view.rows.index(view.rows.rowCount() - 1)
+        deadline = QDeadlineTimer(2000)
+        while view.visualRect(trailing_spacer).isEmpty() or view._layout_follow.isActive():
+            assert not deadline.hasExpired(), "Batched lyric layout and queued follow did not complete"
+            qapp.processEvents()
+        assert not view.visualRect(target).isEmpty()
         assert view._scroll_motion is not None
-        view._scroll_motion.setCurrentTime(650)
-        rect = view.visualRect(view.rows.index(4999))
+        view._scroll_motion.setCurrentTime(320)
+        rect = view.visualRect(target)
         assert abs(rect.center().y() - view.canvas.height() * 0.44) <= 2
     finally:
         dispose_view(view)

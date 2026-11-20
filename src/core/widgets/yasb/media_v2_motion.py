@@ -111,6 +111,12 @@ class RevealEffect(QGraphicsEffect):
         self.sequence.addAnimation(motion)
         self.sequence.finished.connect(self._completed)
         self.setEnabled(False)
+        widget.installEventFilter(self)
+
+    def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
+        if a1 is not None and a1.type() == QEvent.Type.Hide and self.isEnabled():
+            self.finish()
+        return super().eventFilter(a0, a1)
 
     def _get_progress(self):
         return self._progress
@@ -367,9 +373,10 @@ class MediaText(QLabel):
         painter.save()
         painter.setOpacity(opacity)
         painter.translate(-offset, shift)
+        text_rect = QRectF(0, 0, max(width + 2, bounds.width()), bounds.height())
         if not self._scrollable and self.elide:
             text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, round(bounds.width()))
-        text_rect = QRectF(0, 0, max(width + 2, bounds.width()), bounds.height())
+            text_rect = QRectF(bounds)
         alignment = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter if self._scrollable else self.alignment()
         scrolling = self._scrollable and width > bounds.width()
         if scrolling and self._mix >= 1:

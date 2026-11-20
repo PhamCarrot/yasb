@@ -11,7 +11,6 @@ from PyQt6.QtGui import QColor, QImage, QPainter, QPalette, QPixmap, QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QStyle, QStyleOptionSlider, QWidget
 
-from core.utils.tooltip import TooltipEventFilter
 from core.widgets.services.media.audio_device import AudioOutputState
 from core.widgets.services.media.equalizer_apo import EqualizerApoController
 from core.widgets.services.media.lyrics import LyricsService
@@ -43,16 +42,18 @@ def test_switch_keeps_common_widgets_and_header_stationary(qapp: QApplication, m
         popup.sections.tabs.setCurrentIndex(1)
         assert popup.sections.active_index == 1
         motions = cast(dict[str, QPropertyAnimation], getattr(popup.sections.pages[0], "_motion"))
-        assert motions["offset"].duration() == 400
-        assert motions["opacity"].duration() == 250
+        assert motions["offset"].duration() == 400 and motions["opacity"].duration() == 250
+        motions["offset"].setCurrentTime(100)
+        motions["opacity"].setCurrentTime(100)
+        assert -1 < popup.sections.pages[0].offset < 0 and 0 < popup.sections.pages[0].opacity < 1
+        assert popup.sections.pages[2].isHidden()
         popup.sections.finish()
         qapp.processEvents()
         assert common == (popup.art, popup.title, popup.progress, popup.controls, popup.selector)
         assert geometry == tuple(widget.geometry() for widget in common)
         assert popup.equalizer.header.geometry() == header and popup.size() == outer
-        # 235 is preferred; the canonical 565-high reference negotiates 227.
         assert popup.sections.viewport.sizeHint().height() == 235
-        assert popup.sections.viewport.height() == 227 and popup.height() == 565
+        assert popup.sections.viewport.height() == 227 and popup.height() == 569
         assert popup.sections.pages[1].geometry() == popup.sections.viewport.rect()
         assert not popup.sections.pages[0].isVisible()
         assert popup.sections.audio._poll.isActive()
@@ -316,12 +317,96 @@ def test_rapid_reversal_starts_at_current_presentation_and_close_settles(
         popup.sections.tabs.setCurrentIndex(0)
         assert tuple(page.offset for page in popup.sections.pages) == positions
         popup.hide()
-        assert popup.sections.pages[0].offset == 0 and popup.sections.pages[0].opacity == 1
-        assert popup.sections.pages[1].offset == 1 and popup.sections.pages[1].opacity == 0
+        assert popup.sections.pages[0].offset == 0 and not popup.sections.pages[0].isHidden()
+        assert popup.sections.pages[1].offset == 1 and popup.sections.pages[1].isHidden()
         assert not popup.sections.audio._poll.isActive()
         popup.open_at_parent()
         qapp.processEvents()
         assert popup.sections.active_index == 0 and popup.sections.pages[0].isVisible()
+    finally:
+        dispose(parent, popup)
+
+
+def test_same_turn_section_reversal_and_direct_jump_settle_only_the_chosen_page(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        sections = popup.sections
+        for sequence in ((1, 0), (2,), (1, 2, 0)):
+            for index in sequence:
+                sections.tabs.setCurrentIndex(index)
+            popup.hide_animated()
+            popup.open_at_parent()
+            sections.finish()
+            selected = sequence[-1]
+            for index, page in enumerate(sections.pages):
+                assert page.isVisible() == (index == selected)
+                assert page.offset == (0 if index == selected else -1 if index < selected else 1)
+            assert not sections.audio._poll.isActive()
+    finally:
+        dispose(parent, popup)
+
+
+def test_page_reversal_preserves_child_reveals_until_actually_hidden(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        sections = popup.sections
+        band = popup.equalizer.bands.intro[0]
+        band.sequence.setCurrentTime(480)
+        before = band.progress
+        sections.tabs.setCurrentIndex(1)
+        assert 0 < band.progress == before < 1
+        sections.finish()
+        assert not band.isEnabled()
+        cards = sections.audio.intro
+        for effect in cards:
+            effect.sequence.setCurrentTime(150)
+        values = [effect.progress for effect in cards]
+        assert 1 > values[0] > values[1] > values[2] == 0
+        sections.tabs.setCurrentIndex(0)
+        sections.tabs.setCurrentIndex(1)
+        assert [effect.progress for effect in cards] == values
+        sections.tabs.setCurrentIndex(2)
+        sections.finish()
+        assert all(not effect.isEnabled() for effect in cards)
+        sections.tabs.setCurrentIndex(1)
+        assert all(effect.isEnabled() and effect.progress == 0 for effect in cards)
+    finally:
+        dispose(parent, popup)
+
+
+def test_lyrics_retry_uses_right_edge_without_an_empty_action_slot(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.widgets.services.media.lyrics import LyricsState
+
+    owner = Owner()
+
+    def shared(cls: type[LyricsService]) -> LyricsService:
+        return cast(LyricsService, owner)
+
+    monkeypatch.setattr(LyricsService, "shared", classmethod(shared))
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        item = snapshot()
+        popup.set_state(MediaState((item,), item.session_id), QPixmap())
+        popup.open_at_parent()
+        sections = popup.sections
+        sections.tabs.setCurrentIndex(2)
+        sections.finish()
+        assert sections.lyrics.retry_button.isHidden() and sections.action_slot.width() == 0
+        owner.current = LyricsState("missing")
+        owner.changed.emit(owner.watches[-1])
+        qapp.processEvents()
+        retry = sections.lyrics.retry_button
+        assert retry.isVisible() and retry.geometry().right() == popup.equalizer.header.contentsRect().right()
+        qt_test.mouseClick(retry, Qt.MouseButton.LeftButton)
+        assert owner.retries == [owner.watches[-1]]
     finally:
         dispose(parent, popup)
 
@@ -429,7 +514,7 @@ def test_audio_hydration_is_read_only_mono_retains_balance_and_reset_is_whole(qa
         sip.delete(parent)
 
 
-def test_audio_poll_lifetime_and_tooltip_recovery(qapp: QApplication) -> None:
+def test_audio_poll_lifetime_and_accessible_status(qapp: QApplication) -> None:
     parent = QWidget()
     controller = AudioController()
     panel = MediaAudioPanel(cast(EqualizerApoController, controller), 1, parent)
@@ -438,10 +523,13 @@ def test_audio_poll_lifetime_and_tooltip_recovery(qapp: QApplication) -> None:
         panel.show()
         qapp.processEvents()
         assert panel._poll.isActive()
-        assert panel.detail.toolTip() == "Owned disconnected fixture"
+        assert panel.adaptive.toolTip() == ""
+        assert panel.detail.toolTip() == ""
+        assert panel.detail.accessibleDescription() == "Owned disconnected fixture"
         controller.native_observation = NativeObservation(detail="")
         panel.sync()
         assert panel.detail.toolTip() == ""
+        assert panel.detail.accessibleDescription() == ""
         parent.hide()
         assert not panel._poll.isActive()
         panel.sync()
@@ -525,7 +613,7 @@ def test_dynamic_header_input_belongs_to_equalizer_after_reparenting(
         dispose(parent, popup)
 
 
-def test_compact_header_preserves_error_reason_and_recovery(
+def test_compact_header_preserves_accessible_error_reason_and_recovery(
     qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
@@ -533,20 +621,106 @@ def test_compact_header_preserves_error_reason_and_recovery(
         popup.open_at_parent()
         panel = popup.equalizer
 
-        def hint(widget: QWidget) -> str:
-            tooltip = getattr(widget, "_tooltip_filter", None)
-            assert isinstance(tooltip, TooltipEventFilter)
-            return tooltip.tooltip_text
-
         panel._on_apo_status("Error", "Fixture ConfigPath denied")
         assert panel.current.isVisible() and panel.apply_button.isVisible()
-        assert "Fixture ConfigPath denied" in hint(panel.current)
-        assert "Fixture ConfigPath denied" in hint(panel.apply_button)
+        assert "Fixture ConfigPath denied" in panel.current.accessibleDescription()
+        assert "Fixture ConfigPath denied" in panel.apply_button.accessibleDescription()
         panel._sync_apply()
-        assert "Fixture ConfigPath denied" in hint(panel.apply_button)
+        assert "Fixture ConfigPath denied" in panel.apply_button.accessibleDescription()
         panel._on_apo_status("Saved", "Fixture recovered")
-        assert "denied" not in hint(panel.current) and "denied" not in hint(panel.apply_button)
-        assert "Fixture recovered" in hint(panel.header)
+        assert "denied" not in panel.current.accessibleDescription()
+        assert "denied" not in panel.apply_button.accessibleDescription()
+        assert "Fixture recovered" in panel.header.accessibleDescription()
+    finally:
+        dispose(parent, popup)
+
+
+def test_section_tabs_leave_rounded_outer_corners(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        for effect in popup._intro:
+            effect.finish()
+        tabs = popup.sections.tabs
+        selected = QColor("#cba6f7")
+        for index in (0, 2):
+            tabs.setCurrentIndex(index)
+            popup.sections.finish()
+            qapp.processEvents()
+            image = tabs.grab().toImage()
+            x = 0 if index == 0 else image.width() - 1
+            assert image.pixelColor(x, 0) != selected
+            assert image.pixelColor(x, image.height() - 1) != selected
+            tab = tabs.tabRect(index)
+            inside_edge = tab.left() + 5 if index == 0 else tab.right() - 5
+            assert image.pixelColor(inside_edge, tab.center().y()) == selected
+        tab_bottom = tabs.mapTo(popup.equalizer, tabs.rect().bottomLeft()).y()
+        assert popup.sections.viewport.y() - tab_bottom >= 16
+    finally:
+        dispose(parent, popup)
+
+
+def test_returning_to_preset_keeps_header_stable_until_slider_release(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        panel, sections = popup.equalizer, popup.sections
+        panel.select_preset("Bass", motion=False)
+        sections.finish()
+        qapp.processEvents()
+        slider = panel.bands.sliders[0]
+        option = QStyleOptionSlider()
+        slider.initStyleOption(option)
+        style = cast(QStyle, slider.style())
+        point = style.subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider
+        ).center()
+        qt_test.mousePress(slider, Qt.MouseButton.LeftButton, pos=point)
+        qt_test.mouseMove(slider, point + QPoint(0, 20))
+        assert panel.apo.has_draft and panel.apply_button.isEnabled() and panel.current.text() == "Custom"
+        width = sections.action_slot.width()
+        assert width > 0
+        qt_test.mouseMove(slider, point)
+        slider.setSliderPosition(5 * slider.SCALE)
+        assert slider.isSliderDown() and not panel.apo.has_draft
+        assert panel.apply_button.text() == "Apply" and not panel.apply_button.isEnabled()
+        assert panel.current.text() == "Custom" and sections.action_slot.width() == width
+        qt_test.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=point)
+        assert panel.current.text() == "Bass" and panel.buttons["Bass"].isChecked()
+        assert panel.apply_button.isHidden() and sections.action_slot.width() == 0 and not panel.apo.has_draft
+    finally:
+        dispose(parent, popup)
+
+
+def test_preset_caption_retains_reflowed_width_on_interrupted_reopen(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        panel, sections = popup.equalizer, popup.sections
+        tabs = sections.tabs
+        for index in (1, 0):
+            qt_test.mouseClick(tabs, Qt.MouseButton.LeftButton, pos=tabs.tabRect(index).center())
+            sections.finish()
+        qapp.processEvents()
+        tab_rect = tabs.geometry()
+        old_width = sections.preset_slot.width()
+        qt_test.mouseClick(panel.buttons["Classic"], Qt.MouseButton.LeftButton)
+        assert panel.current.text() == "Classic"
+        caption_width = panel.current.sizeHint().width()
+        assert caption_width > old_width
+        assert sections.preset_slot.width() == caption_width
+
+        popup.hide_animated()
+        popup.open_at_parent()
+        qapp.processEvents()
+
+        assert sections.preset_slot.width() == caption_width
+        assert panel.header.rect().contains(QRect(panel.current.mapTo(panel.header, QPoint()), panel.current.size()))
+        assert tabs.geometry() == tab_rect
     finally:
         dispose(parent, popup)
 

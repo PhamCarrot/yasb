@@ -500,7 +500,7 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         "margins": {"horizontal": 4, "vertical": 0, "placeholder": 8},
         "line_height": 30,
         "line_spacing": 6,
-        "animation_duration_ms": 650,
+        "animation_duration_ms": 320,
         "browse_return_ms": 4000,
         "drag_threshold": 4,
         "auto_lookup": True,
@@ -589,23 +589,21 @@ def test_media_popup_renders_custom_layouts(
         )
         widget = MediaWidgetV2(config, backend)
         popup = MediaPopup(widget, config)
-        popup.set_state(backend.state, widget._pixmap)
-        qapp.processEvents()
-        assert popup.title.text() == "First"
-        assert popup.device.text() == "Isolated test output"
-        assert not popup.equalizer.apo.enabled
-        popup.equalizer.select_preset("Bass", motion=False)
-        assert popup.equalizer.preset == "Bass"
-        image = popup.border.grab()
-        assert not image.isNull()
-        assert image.width() >= 625
-        assert image.save(str(tmp_path / f"media-v2-{position}.png"))
-        popup.equalizer.apo.shutdown()
-        popup.close()
-        popup.deleteLater()
-        widget.close()
-        widget.deleteLater()
-        await backend.aclose()
-        qapp.processEvents()
+        try:
+            popup.set_state(backend.state, widget._pixmap)
+            qapp.processEvents()
+            assert popup.title.text() == "First"
+            assert popup.device.text() == "Isolated test output"
+            assert not popup.equalizer.apo.enabled
+            popup.equalizer.select_preset("Bass", motion=False)
+            assert popup.equalizer.preset == "Bass"
+            image = popup.border.grab()
+            assert not image.isNull()
+            assert image.width() >= 625
+            assert image.save(str(tmp_path / f"media-v2-{position}.png"))
+        finally:
+            popup.equalizer.apo.shutdown()
+            sip.delete(widget)
+            await backend.aclose()
 
     asyncio.run(run())

@@ -32,8 +32,8 @@ from core.widgets.services.media.audio_device import AudioOutputState, DefaultAu
 from core.widgets.yasb.media_v2_background import MediaSurface
 from core.widgets.yasb.media_v2_border import MediaBorder
 from core.widgets.yasb.media_v2_components import (
-    MediaButton,
     MediaComboBox,
+    MediaSourceButton,
     MediaText,
     SeekSlider,
     TransportControls,
@@ -49,6 +49,7 @@ from core.widgets.yasb.media_v2_sections import MediaSections
 from core.widgets.yasb.media_v2_styles import media_section_key, media_styles
 
 logger = logging.getLogger("MediaV2")
+OPEN_DURATION_MS = 760
 
 
 def session_option_labels(sessions: tuple[MediaSessionState, ...]):
@@ -56,7 +57,6 @@ def session_option_labels(sessions: tuple[MediaSessionState, ...]):
     bases = [session.player.application_name or session.player.app_id or "Media" for session in sessions]
     totals = Counter(bases)
     ordinals: Counter[str] = Counter()
-    used: Counter[str] = Counter()
     labels: list[str] = []
     for session, base in zip(sessions, bases):
         ordinals[base] += 1
@@ -70,10 +70,15 @@ def session_option_labels(sessions: tuple[MediaSessionState, ...]):
                 label = f"{base} — {hint}"
             else:
                 label = f"{base} {ordinals[base]}"
-        used[label] += 1
-        if used[label] > 1:
-            label = f"{label} ({used[label]})"
         labels.append(label)
+    reserved = set(labels)
+    suffixes: Counter[str] = Counter()
+    for index, label in enumerate(labels):
+        suffixes[label] += 1
+        if suffixes[label] > 1:
+            while f"{label} ({suffixes[label]})" in reserved:
+                suffixes[label] += 1
+            labels[index] = f"{label} ({suffixes[label]})"
     return tuple(labels)
 
 
@@ -114,7 +119,7 @@ class MediaPopup(PopupWidget):
             self.setStyleSheet(media_styles(config))
         self._escape = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape.activated.connect(lambda: self.hide_animated(restore_focus=True))
-        self._fade_animation.setDuration(760)
+        self._fade_animation.setDuration(OPEN_DURATION_MS)
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         self._scroll_area = QScrollArea(self)
@@ -132,7 +137,7 @@ class MediaPopup(PopupWidget):
             "media-border",
         )
         top_height = 464 if config.popup.artwork_position == "top" else 224
-        self._natural_height = self.s(top_height + 42 + (299 if config.popup.show_equalizer else 0))
+        self._natural_height = self.s(top_height + 42 + (303 if config.popup.show_equalizer else 0))
         if config.popup.show_equalizer and not config.popup.show_separator:
             self._natural_height -= self.s(34)
         self.border.setFixedSize(self.s(625), self._natural_height)
@@ -210,10 +215,11 @@ class MediaPopup(PopupWidget):
             "label",
         )
         self.device.setFixedHeight(self.s(22))
+        self.device.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.device.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         source_row.addWidget(self.device, 1)
         self._ensure_output_service()
-        self.source = MediaButton(output, "media-source")
+        self.source = MediaSourceButton(output, "media-source")
         self.source.setObjectName("media-source")
         self.source.setFixedHeight(self.s(22))
         self.source.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -326,8 +332,7 @@ class MediaPopup(PopupWidget):
             self._intro.extend(self.equalizer.intro)
             self._intro.extend(self.sections.audio.intro)
 
-        self._wrapper_intro = RevealEffect(self.surface, 0, 760, scale=0.92, opacity=False)
-        self._intro.insert(0, self._wrapper_intro)
+        self._intro.insert(0, RevealEffect(self.surface, 0, OPEN_DURATION_MS, scale=0.92, opacity=False))
         self._exit_plan: list[tuple[RevealEffect, int, int, QEasingCurve.Type]] = []
         for effect in self._intro:
             spec: tuple[int, int, QEasingCurve.Type]
@@ -338,7 +343,7 @@ class MediaPopup(PopupWidget):
                 spec = (350, 150, QEasingCurve.Type.InBack)
             elif widget in (self.title, self.artist, output):
                 spec = (200, 150, QEasingCurve.Type.InCubic)
-            elif widget is self.controls or widget is timeline:
+            elif widget in (self.controls, timeline):
                 spec = (50, 150, QEasingCurve.Type.InBack)
             elif widget.objectName() == "media-v2-separator":
                 spec = (160, 130, QEasingCurve.Type.InCubic)
@@ -402,8 +407,7 @@ class MediaPopup(PopupWidget):
                 self.artist.reset_scroll(empty=active is None)
             album = active.album if active else ""
             title_tip = "\n".join(value for value in (active.title if active else "", album) if value)
-            if title_tip:
-                set_tooltip(self.title, title_tip)
+            set_tooltip(self.title, title_tip or self.title.text())
             self.art.setAccessibleDescription(
                 " — ".join(value for value in (active.title if active else "", album) if value)
             )
@@ -550,6 +554,7 @@ class MediaPopup(PopupWidget):
 
     def open_at_parent(self, *, focus_first: bool = False):
         self._restore_focus_on_dismiss = False
+        previous_position = self.pos()
         if hasattr(self, "sections"):
             self.sections.resume(preserve_motion=self.isVisible() and self._is_closing)
         self.border.ensurePolished()
@@ -573,16 +578,17 @@ class MediaPopup(PopupWidget):
         )
         if self.isVisible():
             self._fade_animation.stop()
+            self.move(self._bounded_position(previous_position))
             for effect in self._intro:
                 if effect.widget.isVisible():
                     effect.resume()
             self._is_closing = False
-            self._fade_animation.setDuration(760)
+            self._fade_animation.setDuration(OPEN_DURATION_MS)
             self._fade_animation.setEasingCurve(QEasingCurve.Type.OutQuart)
             self._fade_animation.setStartValue(self.windowOpacity())
             self._fade_animation.setEndValue(1.0)
             self._fade_animation.start()
-            animate(self, "pos", self._open_pos, 760, QEasingCurve.Type.OutQuart)
+            animate(self, "pos", self._open_pos, OPEN_DURATION_MS, QEasingCurve.Type.OutQuart)
         else:
             self.move(self._closed_pos)
             self.show()
@@ -596,10 +602,10 @@ class MediaPopup(PopupWidget):
     def showEvent(self, a0: QShowEvent | None):
         if a0 is None:
             return None
-        self._fade_animation.setDuration(760)
+        self._fade_animation.setDuration(OPEN_DURATION_MS)
         super().showEvent(a0)
         self._fade_animation.setEasingCurve(QEasingCurve.Type.OutQuart)
-        animate(self, "pos", self._open_pos, 760, QEasingCurve.Type.OutQuart)
+        animate(self, "pos", self._open_pos, OPEN_DURATION_MS, QEasingCurve.Type.OutQuart)
         for effect in self._intro:
             if effect.widget.isVisible():
                 effect.replay()

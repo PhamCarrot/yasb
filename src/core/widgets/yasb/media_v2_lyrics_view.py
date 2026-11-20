@@ -106,6 +106,7 @@ class LyricsDelegate(QStyledItemDelegate):
             # Keep its face and honor a distinct row size when one is supplied.
             font.setPixelSize(max(font.pixelSize(), round(18 * self.view.scale)))
         layout = QTextLayout(self.view.rows.texts[row], font)
+        layout.setCacheEnabled(True)
         option = QTextOption()
         option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         option.setAlignment(self.view.text_alignment)
@@ -138,6 +139,24 @@ class LyricsDelegate(QStyledItemDelegate):
         if row not in self.heights:
             self.layout_for(row)
         return QSize(max(1, self.view.canvas.width()), self.heights[row])
+
+    def _line_color(self, row: int, tint: float | None) -> QColor:
+        normal = self.view.inactive_color
+        document, position = self.view.document, self.view.position_ms
+        if document is None or not document.lines or position is None:
+            return normal
+        line = document.lines[row]
+        active = row == self.view.current_line and (line.end_ms is None or position < line.end_ms)
+        level = float(active) if tint is None or row == self.view.current_line and not active else tint
+        if not level:
+            return normal
+        accent = self.view.active_color
+        return QColor(
+            round(normal.red() + (accent.red() - normal.red()) * level),
+            round(normal.green() + (accent.green() - normal.green()) * level),
+            round(normal.blue() + (accent.blue() - normal.blue()) * level),
+            round(normal.alpha() + (accent.alpha() - normal.alpha()) * level),
+        )
 
     def formats(self, row: int, tint: float | None = None) -> list[QTextLayout.FormatRange]:
         document = self.view.document
@@ -186,15 +205,7 @@ class LyricsDelegate(QStyledItemDelegate):
                 )
                 offset += count
             return ranges
-        active = row == self.view.current_line and (line.end_ms is None or position < line.end_ms)
-        level = float(active) if tint is None or row == self.view.current_line and not active else tint
-        color = QColor(
-            round(normal.red() + (accent.red() - normal.red()) * level),
-            round(normal.green() + (accent.green() - normal.green()) * level),
-            round(normal.blue() + (accent.blue() - normal.blue()) * level),
-            round(normal.alpha() + (accent.alpha() - normal.alpha()) * level),
-        )
-        return [span(0, length, color)]
+        return [span(0, length, self._line_color(row, tint))]
 
     def paint(self, painter: QPainter | None, option: QStyleOptionViewItem, index: QModelIndex) -> None:
         row = index.row() - 1
@@ -203,12 +214,13 @@ class LyricsDelegate(QStyledItemDelegate):
         layout = self.layout_for(row)
         painter.save()
         painter.setClipRect(option.rect)
-        height = layout.boundingRect().height()
+        bounds = layout.boundingRect()
+        height = bounds.height()
         top = option.rect.y() + max(
             0, (option.rect.height() - round(self.view.options.line_spacing * self.view.scale) - height) / 2
         )
         margin = round(self.view.options.margins.horizontal * self.view.scale)
-        text_width = layout.boundingRect().width()
+        text_width = bounds.width()
         if self.view.options.alignment == "center":
             left = option.rect.x() + (option.rect.width() - text_width) / 2
             origin_x, draw_x = text_width / 2, -text_width / 2
@@ -219,12 +231,16 @@ class LyricsDelegate(QStyledItemDelegate):
             left = option.rect.x() + margin
             origin_x, draw_x = 0, 0
         ratio, opacity, tint = self.view.line_appearance(row)
-        painter.save()
         painter.setOpacity(painter.opacity() * opacity)
         painter.translate(left + origin_x, top + height / 2)
         painter.scale(ratio, ratio)
-        layout.draw(painter, QPointF(draw_x, -height / 2), self.formats(row, tint))
-        painter.restore()
+        origin = QPointF(draw_x, -height / 2)
+        document = self.view.document
+        if document and document.lines and document.lines[row].words:
+            layout.draw(painter, origin, self.formats(row, tint))
+        else:
+            painter.setPen(self._line_color(row, tint))
+            layout.draw(painter, origin)
         painter.restore()
 
 
@@ -412,9 +428,11 @@ class LyricsView(QListView):
         self.identity, self.position_ms = identity, position_ms
         current = self.document.line_at(position_ms) if self.document and position_ms is not None else -1
         if current != self.current_line:
-            self._transition_line(current)
-            if not self.browsing:
-                self.follow()
+            if not self.browsing and self.follow(current):
+                self.current_line = current
+                self.finish_line_motion()
+            else:
+                self._transition_line(current)
         self.canvas.update()
 
     def _follow_after_layout(self) -> None:
@@ -427,27 +445,37 @@ class LyricsView(QListView):
         if self._scroll_motion is not None:
             self._scroll_motion.stop()
 
-    def follow(self) -> None:
+    def follow(self, line: int | None = None) -> bool:
         if self._gesture_start is not None or self.scroll_bar.isSliderDown():
             self._return.start()
-            return
+            return False
         self.browsing = False
         self._return.stop()
         if self.document is None or not self.document.lines:
-            return
-        index = self.rows.index(max(0, self.current_line) + 1)
+            return False
+        index = self.rows.index(max(0, self.current_line if line is None else line) + 1)
         rect = self.visualRect(index)
         target = (
             self.scroll_bar.value() + rect.center().y() - round(self.canvas.height() * self.options.center_position)
         )
         bar = self.scroll_bar
+        target = max(bar.minimum(), min(bar.maximum(), target))
+        motion = self._scroll_motion
+        if target == bar.value():
+            if motion is not None:
+                motion.stop()
+            self._scroll_motion = None
+            return False
+        if motion is not None and motion.state() == QPropertyAnimation.State.Running and motion.endValue() == target:
+            return True
         self._scroll_motion = animate(
             bar,
             "value",
-            max(bar.minimum(), min(bar.maximum(), target)),
+            target,
             self.options.animation_duration_ms,
             QEasingCurve.Type.OutCubic,
         )
+        return self._scroll_motion.state() == QPropertyAnimation.State.Running
 
     def cancel_interaction(self) -> None:
         self._pressed = None

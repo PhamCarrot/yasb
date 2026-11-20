@@ -104,7 +104,8 @@ class DiscArt(AlbumArt):
         lease = self._lease
         self.destroyed.connect(lambda *_: lease.detach())
         self._clock = QTimer(self)
-        self._clock.setInterval(round(1000 / options.framerate))
+        self._clock.setTimerType(Qt.TimerType.PreciseTimer)
+        self._clock.setInterval(1000 // options.framerate)
         self._clock.timeout.connect(self._tick)
 
     def set_artwork(self, pixmap: QPixmap, playing: bool = False, *, clear_previous: bool = False):

@@ -6,16 +6,30 @@ from typing import Any, cast
 import PyQt6.sip as sip
 import pytest
 from PyQt6.QtCore import QElapsedTimer, QRect, Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QKeySequence, QPixmap
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from core.widgets.services.media.model import MediaSessionState, MediaState, Metadata, Playback, PlaybackState, Player
+from core.widgets.yasb.media_v2_popup import session_option_labels
 from tests.widgets.test_media_popup_geometry import make_popup
 
 # PyQt6 6.10.2 stubs incorrectly describe this non-instantiable C++ namespace
 # as instance methods. Keep the compatibility cast local to the test driver.
 qt_test = cast(Any, QTest)
+
+
+def test_session_labels_reserve_literal_numbered_track_names() -> None:
+    sessions = tuple(
+        MediaSessionState(Player(str(index), "browser", "Browser"), metadata=Metadata(title=name))
+        for index, name in enumerate(("Song", "Song", "Song (2)", "Song"))
+    )
+    assert session_option_labels(sessions) == (
+        "Browser — Song",
+        "Browser — Song (3)",
+        "Browser — Song (2)",
+        "Browser — Song (4)",
+    )
 
 
 @pytest.mark.parametrize("change", ["playback", "reorder", "removed", "rename"])
@@ -25,7 +39,7 @@ def test_open_player_menu_retains_highlight_by_session(
     parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
     first, second = (
         MediaSessionState(Player(sid, "same.app", "Player"), metadata=Metadata(title=title))
-        for sid, title in (("one", "One"), ("two", "Two"))
+        for sid, title in (("one", "One"), ("two", "R&B Radio"))
     )
     selected: list[str | None] = []
     popup.session_selected.connect(selected.append)
@@ -35,6 +49,8 @@ def test_open_player_menu_retains_highlight_by_session(
         popup._open_session_menu()
         menu = popup.selector.popup_menu
         highlighted = next(a for a in menu.actions() if a.data() == "two")
+        assert "R&B Radio" in popup.selector.itemText(popup.selector.findData("two"))
+        assert "R&&B Radio" in highlighted.text() and QKeySequence.mnemonic(highlighted.text()).isEmpty()
         menu.setActiveAction(highlighted)
         if change == "playback":
             sessions = (replace(first, playback=Playback(PlaybackState.PLAYING)), second)

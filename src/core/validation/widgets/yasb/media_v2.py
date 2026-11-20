@@ -51,7 +51,7 @@ class MediaDiscConfig(CustomBaseModel):
     glow: bool = True
     rhythm_strength: float = Field(default=1.0, ge=0.0, le=3.0, allow_inf_nan=False)
     glow_strength: float = Field(default=1.0, ge=0.0, le=3.0, allow_inf_nan=False)
-    framerate: int = Field(default=30, ge=15, le=60)
+    framerate: int = Field(default=60, ge=15, le=60)
 
 
 class MediaEqualizerApoConfig(CustomBaseModel):
@@ -130,17 +130,15 @@ class MediaLyricsConfig(CustomBaseModel):
     margins: MediaLyricsMarginsConfig = Field(default_factory=MediaLyricsMarginsConfig)
     line_height: int = Field(default=30, ge=0, le=200)
     line_spacing: int = Field(default=6, ge=0, le=100)
-    animation_duration_ms: int = Field(default=650, ge=0, le=5000)
+    animation_duration_ms: int = Field(default=320, ge=0, le=5000)
     browse_return_ms: int = Field(default=4000, ge=0, le=60000)
     drag_threshold: int = Field(default=4, ge=1, le=64)
     auto_lookup: bool = True
-    provider_order: list[Literal["lrclib", "netease", "better_lyrics", "musixmatch"]] = (
-        Field(
-            default_factory=lambda: ["lrclib", "netease", "better_lyrics"],
-            min_length=1,
-            max_length=4,
-            json_schema_extra={"uniqueItems": True},
-        )
+    provider_order: list[Literal["lrclib", "netease", "better_lyrics", "musixmatch"]] = Field(
+        default_factory=lambda: ["lrclib", "netease", "better_lyrics"],
+        min_length=1,
+        max_length=4,
+        json_schema_extra={"uniqueItems": True},
     )
     better_lyrics_enabled: bool = True
     musixmatch_enabled: bool = False

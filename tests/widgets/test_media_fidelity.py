@@ -11,7 +11,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFrame, QWidget
 
 from core.validation.widgets.yasb.media_v2 import MediaDiscConfig
-from core.widgets.services.media.model import MediaSessionState, MediaState, Playback, PlaybackState, Player
+from core.widgets.services.media.model import MediaSessionState, MediaState, Metadata, Playback, PlaybackState, Player
 from core.widgets.yasb.media_v2_disc import DiscArt
 from core.widgets.yasb.media_v2_motion import MediaText
 from tests.widgets.test_media_popup_geometry import make_popup
@@ -181,6 +181,23 @@ def test_popup_preserves_documented_style_identities_after_reparenting(
         sip.delete(parent)
 
 
+def test_title_tooltip_follows_track_and_empty_state(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    player = MediaSessionState(Player("one", "one.app", "One"))
+    track = replace(player, metadata=Metadata(title="Another Sky", album="North"), metadata_ready=True)
+    try:
+        popup.set_state(MediaState((track,), "one"), QPixmap())
+        tip = getattr(popup.title, "_tooltip_filter")
+        assert tip.tooltip_text == "Another Sky\nNorth"
+        for state in (MediaState((player,), "one"), MediaState()):
+            popup.set_state(state, QPixmap())
+            assert tip.tooltip_text == popup.title.text()
+    finally:
+        popup.hide()
+        popup.equalizer.apo.shutdown()
+        sip.delete(parent)
+
+
 def test_popup_publishes_documented_dynamic_style_classes(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
     parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
     first = MediaSessionState(Player("one", "one.app", "One"))
@@ -223,12 +240,15 @@ def test_canonical_layout_negotiates_pages_without_clipping_and_reopens_stably(
         for _ in range(3):
             popup.open_at_parent()
             qapp.processEvents()
-            assert popup.width() == round(625 * scale) and popup.height() == round(565 * scale)
+            assert popup.width() == round(625 * scale) and popup.height() == round(569 * scale)
             for index in range(3):
                 popup.sections.tabs.setCurrentIndex(index)
                 popup.sections.finish()
                 qapp.processEvents()
-                assert popup.height() == round(565 * scale)
+                tabs = popup.sections.tabs
+                for tab_index in range(tabs.count()):
+                    assert tabs.rect().contains(tabs.tabRect(tab_index)), (tabs.rect(), tabs.tabRect(tab_index))
+                assert popup.height() == round(569 * scale)
                 page = popup.sections.pages[index]
                 vertical, horizontal = page.verticalScrollBar(), page.horizontalScrollBar()
                 assert vertical is not None and horizontal is not None
@@ -277,6 +297,151 @@ def test_player_picker_is_visible_only_for_multiple_sessions_and_retires_menu_wh
         sip.delete(parent)
 
 
+def test_info_row_centers_device_and_via_and_right_aligns_selector(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PyQt6.QtWidgets import QStyle, QStyleOptionComboBox
+
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        for effect in popup._intro:
+            effect.finish()
+        players = tuple(MediaSessionState(Player(sid, sid, sid)) for sid in ("One", "Two"))
+        for name in ("DAC", "A long device and player name " * 7):
+            for count in (1, 2):
+                popup.set_state(MediaState(players[:count], "One"), QPixmap())
+                qapp.processEvents()
+                source = popup.source if count == 1 else popup.selector
+                for widget in (popup.device, source):
+                    if widget is popup.selector:
+                        setter = popup.selector.set_display_label
+                        option = QStyleOptionComboBox()
+                        popup.selector.initStyleOption(option)
+                        bounds = cast(QStyle, widget.style()).subControlRect(
+                            QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxEditField, widget
+                        )
+                    else:
+                        setter = popup.device.setText if widget is popup.device else popup.source.setText
+                        bounds = widget.contentsRect()
+                    setter("")
+                    empty = widget.grab().toImage()
+                    setter(name)
+                    drawn = widget.grab().toImage()
+                    dpr = drawn.devicePixelRatio()
+                    ink = [
+                        x / dpr
+                        for x in range(drawn.width())
+                        if any(drawn.pixel(x, y) != empty.pixel(x, y) for y in range(drawn.height()))
+                    ]
+                    assert ink, widget.objectName()
+                    if widget is not popup.selector:
+                        assert abs((min(ink) + max(ink)) / 2 - bounds.center().x()) <= 3, (bounds, min(ink), max(ink))
+                    else:
+                        assert abs(max(ink) - bounds.right()) <= 14, (widget.objectName(), bounds, ink[-1:])
+                        if name == "DAC":
+                            assert min(ink) > bounds.center().x(), widget.objectName()
+                    if name != "DAC":
+                        assert max(ink) - min(ink) >= bounds.width() * 0.65, widget.objectName()
+    finally:
+        popup.hide()
+        popup.equalizer.apo.shutdown()
+        sip.delete(parent)
+
+
+def test_open_stages_art_text_transport_and_individual_equalizer_bands(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        stages = {effect.widget: effect for effect in popup._intro}
+        for effect in stages.values():
+            if effect.widget.isVisible():
+                effect.sequence.setCurrentTime(200)
+        assert 0 < stages[popup.title].progress < stages[popup.art].progress < 1
+        assert stages[popup.controls].progress == 0
+        bands = popup.equalizer.bands
+        assert {effect.widget for effect in bands.intro} == {slider.parentWidget() for slider in bands.sliders}
+        for effect in bands.intro:
+            assert effect.progress == 0
+            effect.sequence.setCurrentTime(650)
+            assert 0 < effect.progress < 1
+        assert bands.intro[0]._offset.y() < bands.intro[-1]._offset.y()
+    finally:
+        popup.hide()
+        popup.equalizer.apo.shutdown()
+        sip.delete(parent)
+
+
+def test_player_selector_has_a_visible_themeable_arrow(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    from PyQt6.QtWidgets import QStyle, QStyleOptionComboBox
+
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        players = tuple(MediaSessionState(Player(sid, sid, sid)) for sid in ("One", "Two"))
+        popup.set_state(MediaState(players, "One"), QPixmap())
+        popup.open_at_parent()
+        for effect in popup._intro:
+            effect.finish()
+        selector = popup.selector
+        option = QStyleOptionComboBox()
+        selector.initStyleOption(option)
+        area = cast(QStyle, selector.style()).subControlRect(
+            QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxArrow, selector
+        )
+        area.adjust(2, 5, -2, -5)
+
+        def colors() -> set[str]:
+            image = selector.grab(area).toImage()
+            return {image.pixelColor(x, y).name() for x in range(image.width()) for y in range(image.height())}
+
+        assert len(colors()) > 2
+        selector.setStyleSheet("QComboBox::down-arrow { image: none; background: #ed0bee; width: 8px; height: 8px; }")
+        assert "#ed0bee" in colors()
+    finally:
+        popup.hide()
+        popup.equalizer.apo.shutdown()
+        sip.delete(parent)
+
+
+def test_visual_preset_buttons_move_handles_and_reverse_from_the_current_position(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        panel = popup.equalizer
+        slider = panel.bands.sliders[0]
+        qt_test = cast(Any, QTest)
+        qt_test.mouseClick(panel.buttons["Bass"], Qt.MouseButton.LeftButton)
+        motion = cast(dict[str, QPropertyAnimation], getattr(slider, "_motion"))["gain"]
+        assert slider.gain == 0 and panel.apo.editing_gains[0] == 5
+        motion.setCurrentTime(65)
+        first = slider.gain
+        assert 0 < first < 5
+        qt_test.mouseClick(panel.buttons["Treble"], Qt.MouseButton.LeftButton)
+        assert slider.gain == pytest.approx(first) and panel.apo.editing_gains[0] == -2
+        motion.setCurrentTime(65)
+        assert -2 < slider.gain < first
+        motion.setCurrentTime(motion.duration())
+        assert slider.gain == -2 and not panel.apo.has_draft
+
+        def supersede(values: tuple[float, ...]) -> None:
+            if values[0] == 5:
+                panel.buttons["Flat"].click()
+
+        panel.apo.committed_changed.connect(supersede)
+        panel.buttons["Bass"].click()
+        assert panel.preset == "Flat" and motion.endValue() == 0 and slider.gain == -2
+        motion.setCurrentTime(65)
+        assert -2 < slider.gain < 0 and not panel.apo.has_draft
+    finally:
+        popup.hide()
+        popup.equalizer.apo.shutdown()
+        sip.delete(parent)
+
+
 def test_seek_during_pause_decay_does_not_freeze_wave_clock(qapp: QApplication) -> None:
     from core.widgets.yasb.media_v2_components import SeekSlider
 
@@ -298,7 +463,10 @@ def test_seek_during_pause_decay_does_not_freeze_wave_clock(qapp: QApplication) 
         sip.delete(slider)
 
 
-def test_short_progress_wave_keeps_a_visible_crest(qapp: QApplication) -> None:
+@pytest.mark.parametrize(("progress", "minimum_crest_pixels"), [(0.02, 4), (0.05, 8)])
+def test_short_progress_wave_stays_inside_authoritative_fill(
+    qapp: QApplication, progress: float, minimum_crest_pixels: int
+) -> None:
     from core.widgets.yasb.media_v2_components import SeekSlider
 
     slider = SeekSlider(1)
@@ -310,7 +478,7 @@ def test_short_progress_wave_keeps_a_visible_crest(qapp: QApplication) -> None:
     slider.resize(625, 50)
     try:
         slider.show()
-        slider.set_progress(0.05, reset=True)
+        slider.set_progress(progress, reset=True)
         slider.waveOpacity = 1.0
         slider.wavePhase = 0.0
         slider.waveAmplitude = 0.0
@@ -323,17 +491,17 @@ def test_short_progress_wave_keeps_a_visible_crest(qapp: QApplication) -> None:
         changed = sum(
             1
             for y in range(max(0, round(handle.top()) - 12), round(handle.top()))
-            for x in range(max(0, round(handle.left())), round(handle.right()) + 1)
+            for x in range(round(track.left()), round(fill.right()) + 1)
             if wave.pixelColor(x, y) != base.pixelColor(x, y)
         )
-        assert changed >= 8
+        assert changed >= minimum_crest_pixels
         lookahead_changed = sum(
             1
             for y in range(max(0, round(handle.top()) - 12), round(handle.top()))
             for x in range(round(fill.right()) + 2, round(min(track.right(), fill.right() + 32)))
             if wave.pixelColor(x, y) != base.pixelColor(x, y)
         )
-        assert lookahead_changed >= 4
+        assert lookahead_changed == 0
     finally:
         slider.hide()
         sip.delete(slider)
@@ -394,7 +562,7 @@ def test_interrupted_intro_close_preserves_band_presentation(
     try:
         popup.open_at_parent()
         effect = popup.equalizer.bands.intro[0]
-        effect.sequence.setCurrentTime(600)
+        effect.sequence.setCurrentTime(effect.sequence.duration() // 2)
         progress = effect.progress
         assert 0 < progress < 1
         popup.hide_animated()
@@ -447,8 +615,11 @@ def test_header_morph_and_adaptive_overlay_stay_page_scoped(
         tabs_rect = sections.tabs.geometry()
         before = sections.action_slot.extent
         sections.tabs.setCurrentIndex(1)
-        assert sections.action_slot.extent == before
-        assert cast(dict[str, QPropertyAnimation], getattr(sections.action_slot, "_motion"))["extent"].duration() == 400
+        assert sections.action_slot.extent >= before
+        action_motion = cast(dict[str, QPropertyAnimation], getattr(sections.action_slot, "_motion", {})).get("extent")
+        assert action_motion is not None and action_motion.state() == QPropertyAnimation.State.Running
+        action_motion.setCurrentTime(100)
+        assert before < sections.action_slot.extent < action_motion.endValue()
         sections.finish()
         qapp.processEvents()
         assert sections.tabs.geometry() == tabs_rect

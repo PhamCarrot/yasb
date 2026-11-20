@@ -86,10 +86,9 @@ class MediaPage(QScrollArea):
 
     def _set_opacity(self, value: float) -> None:
         self._opacity = max(0.0, min(1.0, value))
-        visible = self.selected or self._opacity > 0
         self.opacity_effect.setOpacity(self._opacity)
-        self.opacity_effect.setEnabled(visible and self._opacity < 1)
-        self.setVisible(visible)
+        self.opacity_effect.setEnabled((self.selected or self._opacity > 0) and self._opacity < 1)
+        self.setVisible(self._opacity > 0 or self.selected)
 
     opacity: float = pyqtProperty(float, _get_opacity, _set_opacity)
 
@@ -136,18 +135,22 @@ class HeaderSlot(QFrame):
         widget.setMaximumWidth(16777215)
         self.widgets.append(widget)
 
+    @property
+    def has_content(self) -> bool:
+        return self._presented is not None
+
     def present(
         self, widget: QWidget | None, width: int, duration: int, motion: bool = True, *, reflow: bool = False
     ) -> None:
         content_width = max(1, width)
-        if motion and self._presented is widget:
-            if widget is None or self.content_width == content_width:
-                return
-            if reflow:
-                extent = cast(dict[str, QPropertyAnimation], getattr(self, "_motion", {})).get("extent")
-                motion = extent is not None and extent.state() == QPropertyAnimation.State.Running
-                if extent is not None and motion:
-                    duration = max(1, extent.duration() - extent.currentTime())
+        same_widget = self._presented is widget
+        if motion and same_widget and (widget is None or self.content_width == content_width):
+            return
+        animation = cast(dict[str, QPropertyAnimation], getattr(self, "_motion", {})).get("extent")
+        if motion and same_widget and reflow:
+            motion = animation is not None and animation.state() == QPropertyAnimation.State.Running
+            if animation is not None and motion:
+                duration = max(1, animation.duration() - animation.currentTime())
         self.content_width = content_width
         self._presented = widget
         for child in self.widgets:
@@ -156,7 +159,9 @@ class HeaderSlot(QFrame):
         if motion and self.isVisible():
             animate(self, "extent", target, duration, QEasingCurve.Type.OutCubic)
         else:
-            settle(self)
+            if animation is not None:
+                animation.stop()
+                animation.setEndValue(target)
             self.extent = target
         self._place()
 
@@ -214,12 +219,10 @@ class MediaSections(QObject):
         self.tabs.addTab("Audio")
         self.tabs.addTab("Lyrics")
         self.tabs.setExpanding(True)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideRight)
         self.tabs.setDrawBase(False)
         self.tabs.setUsesScrollButtons(False)
-        self.tabs.setFixedHeight(round(26 * scale))
-        self.tabs.setMinimumWidth(round(168 * scale))
-        self.tabs.setMaximumWidth(round(224 * scale))
-        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.tabs.setFixedSize(self.tabs.sizeHint())
         self.tabs.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         panel.title.hide()
         panel.header_layout.insertWidget(0, self.tabs)
@@ -247,7 +250,6 @@ class MediaSections(QObject):
         panel.sync_effect_overlay()
         self.audio.reset_button.setParent(panel.header)
         self.audio.reset_button.setFixedSize(round(70 * scale), round(26 * scale))
-        panel.header_layout.addWidget(self.audio.reset_button)
         self.audio.reset_button.hide()
         self.audio.adaptive.setParent(panel.header)
         policy = self._policies[1].pop(self.audio.adaptive)
@@ -255,45 +257,27 @@ class MediaSections(QObject):
         self._membership[self.audio.adaptive] = 0
         self.audio.adaptive.setFocusPolicy(policy)
         self.audio.adaptive.setFixedSize(round(108 * scale), round(26 * scale))
-        panel.header_layout.addWidget(self.audio.adaptive)
         self.audio.adaptive.show()
-        for button in (self.lyrics.retry_button,):
-            button.setParent(panel.header)
-            button.setFixedSize(round(54 * scale), round(26 * scale))
-            panel.header_layout.addWidget(button)
-            button.hide()
-        for widget in (
-            panel.status,
-            panel.current,
-            panel.apply_button,
-            self.audio.reset_button,
-            self.audio.adaptive,
-            self.lyrics.retry_button,
-        ):
+        self.lyrics.retry_button.setParent(panel.header)
+        self.lyrics.retry_button.setFixedSize(round(54 * scale), round(26 * scale))
+        self.lyrics.retry_button.hide()
+        for widget in (panel.status, panel.current, panel.apply_button):
             panel.header_layout.removeWidget(widget)
         panel.status.hide()
         panel.status.setProperty("compact_header", True)
         panel.header_layout.setSpacing(round(6 * scale))
-        for widget in (
-            self.audio.adaptive,
-            panel.apply_button,
-            self.audio.reset_button,
-            self.lyrics.retry_button,
-            panel.current,
-        ):
-            panel.header_layout.addWidget(widget)
+        panel.header_layout.addWidget(self.audio.adaptive)
         panel.apply_button.setFixedSize(round(68 * scale), round(26 * scale))
         self.audio.reset_button.setFixedWidth(round(84 * scale))
         self.audio.adaptive.setAccessibleName("Dynamic equalizer")
         self.action_slot = HeaderSlot(panel.header, scale)
         self.preset_slot = HeaderSlot(panel.header, scale, fade=True)
         for widget in (panel.apply_button, self.audio.reset_button):
-            panel.header_layout.removeWidget(widget)
             self.action_slot.add(widget)
-        panel.header_layout.removeWidget(panel.current)
         self.preset_slot.add(panel.current)
         panel.header_layout.addWidget(self.action_slot)
         panel.header_layout.addWidget(self.preset_slot)
+        panel.header_layout.addWidget(self.lyrics.retry_button)
         self._header_scale = scale
         self._sync_header(motion=False)
         for index, controls in enumerate(
@@ -325,23 +309,24 @@ class MediaSections(QObject):
         self._previous = QShortcut(QKeySequence("Ctrl+Shift+Tab"), panel)
         self._previous.activated.connect(lambda: self.tabs.setCurrentIndex((self.active_index - 1) % len(self.pages)))
 
-    def _sync_header(self, *, motion: bool = True, caption_changed: bool = False) -> None:
+    def _sync_header(self, *, motion: bool = True, caption_changed: bool = False, navigating: bool = False) -> None:
         scale = self._header_scale
         index = self.active_index
         button = (self.panel.apply_button, self.audio.reset_button, self.lyrics.retry_button)[index]
         minimum, padding = ((68, 26), (84, 46), (54, 26))[index]
-        action_visible = index != 0 or self.panel.apply_action_visible()
+        action_visible = index == 1 or (index == 0 and self.panel.apply_action_visible())
         width = (
             max(round(minimum * scale), button.fontMetrics().horizontalAdvance(button.text()) + round(padding * scale))
             if action_visible
             else 0
         )
-        if index == 0:
-            # Reserve the widest EQ header while other pages are selected;
-            # long Windows status labels must not move the tab targets.
-            reserved = width + self.audio.adaptive.width() + self.panel.current.sizeHint().width() + round(24 * scale)
-            self.tabs.setFixedWidth(max(round(168 * scale), min(round(224 * scale), round(583 * scale) - reserved)))
-        self.action_slot.present(button if action_visible else None, width, 400, motion)
+        action_visibility_changed = self.action_slot.has_content != action_visible
+        self.action_slot.present(
+            button if action_visible else None,
+            width,
+            400,
+            motion and (navigating or not action_visibility_changed),
+        )
         preset_width = self.panel.current.sizeHint().width()
         self.preset_slot.present(
             self.panel.current if index == 0 else None, preset_width, 400, motion, reflow=caption_changed
@@ -379,24 +364,17 @@ class MediaSections(QObject):
         ):
             self.tabs.setFocus(Qt.FocusReason.OtherFocusReason)
         self._cancel_gestures(previous)
+        self.panel.set_page_active(index == 0, preserve_motion=True)
         self.active_index = index
-        self.panel.set_page_active(index == 0)
         self.audio.adaptive.setVisible(index == 0)
-        self.audio.set_active(index == 1)
         self.lyrics.retry_button.setVisible(index == 2)
         self.lyrics.set_active(index == 2)
-        self._sync_header()
+        self._sync_header(navigating=True)
         for number, page in enumerate(self.pages):
             page.selected = number == index
             self._set_interactive(number, page.selected)
-            page.setProperty("opacity", page.opacity)
-            animate(
-                page,
-                "offset",
-                0.0 if page.selected else -1.0 if number < index else 1.0,
-                400,
-                QEasingCurve.Type.OutQuart,
-            )
+            target = 0.0 if page.selected else -1.0 if number < index else 1.0
+            animate(page, "offset", target, 400, QEasingCurve.Type.OutQuart)
             animate(page, "opacity", 1.0 if page.selected else 0.0, 250, QEasingCurve.Type.OutCubic)
 
     def _cancel_gestures(self, index: int) -> None:
@@ -426,7 +404,6 @@ class MediaSections(QObject):
             self._set_interactive(index, False)
             self._cancel_gestures(index)
         self.panel.set_page_active(False, preserve_motion=preserve_motion)
-        self.audio.set_active(False, preserve_motion=preserve_motion)
         self.lyrics.set_active(False)
 
     def resume(self, *, preserve_motion: bool = False) -> None:
@@ -436,7 +413,6 @@ class MediaSections(QObject):
         for index in range(len(self.pages)):
             self._set_interactive(index, index == self.active_index)
         self.panel.set_page_active(self.active_index == 0, preserve_motion=preserve_motion)
-        self.audio.set_active(self.active_index == 1, preserve_motion=preserve_motion)
         self.lyrics.set_active(self.active_index == 2)
 
     def finish(self) -> None:
@@ -455,7 +431,7 @@ class MediaSections(QObject):
         index = self._membership.get(watched) if watched is not None else None
         if event is not None and watched is self.panel.body and event.type() == QEvent.Type.Resize:
             self.panel.sync_effect_overlay()
-        if event is not None and watched in self.pages and event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
+        if event is not None and watched is self.pages[0] and event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
             self.panel.sync_effect_overlay()
         guarded = index is not None or watched in self._headers
         if (

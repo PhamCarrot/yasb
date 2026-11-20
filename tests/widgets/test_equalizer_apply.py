@@ -119,6 +119,56 @@ def test_mouse_drag_applies_only_edited_bands_during_preset_tween(
     asyncio.run(run())
 
 
+def test_two_visible_apo_views_keep_preset_travel_through_writer_readback(
+    tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        panel, writer = owned_panel(tmp_path, monkeypatch)
+        other = panel_module.EqualizerPanel(panel.options, 1)
+        try:
+            panel.show()
+            other.show()
+            await settled(qapp, writer)
+            held = other.bands.sliders[1]
+            held.setSliderDown(True)
+            qt_test.mouseClick(panel.buttons["Bass"], Qt.MouseButton.LeftButton)
+            for view in (panel, other):
+                handle = view.bands.sliders[0]
+                tween = cast(dict[str, QPropertyAnimation], getattr(handle, "_motion"))["gain"]
+                tween.setCurrentTime(70)
+                position = handle.gain
+                assert 0 < position < 5 and view.apo.editing_gains[0] == 5
+                view.apo._on_owner_changed(view.apo._target, force=True)
+                assert tween.currentTime() == 70 and handle.gain == pytest.approx(position)
+                assert not view.apo.has_draft
+            assert held.gain == 0
+            generation = writer._generation
+            held.setSliderDown(False)
+            assert held.gain == 7 and not other.apo.has_draft and writer._generation == generation
+            await settled(qapp, writer)
+            data = (tmp_path / "config" / apo.MANAGED_FILENAME).read_bytes()
+            assert data == apo.render_managed_config(panel_module.PRESETS["Bass"], OUTPUT.endpoint_guid).encode()
+            held.setSliderDown(True)
+            custom = (3.0,) * 10
+            assert panel.apo.apply_preset(custom)
+            assert other.apo.editing_gains == custom and held.gain == 7
+            held.setSliderDown(False)
+            assert held.gain == 3 and not other.apo.has_draft
+            held.setSliderDown(True)
+            assert panel.apo.update_custom((2.0,) * 10)
+            assert not held.isEnabled() and not held.isSliderDown()
+            assert panel.apo.apply_custom()
+            assert held.isEnabled() and held.gain == 2 and not other.apo.has_draft
+        finally:
+            for view in (other, panel):
+                view.close()
+                view.apo.shutdown()
+                view.deleteLater()
+            await EqualizerApoWriter.aclose_shared()
+
+    asyncio.run(run())
+
+
 def test_preset_caption_fits_during_held_write_and_rapid_selection(
     tmp_path: Path, qapp: QApplication, monkeypatch: pytest.MonkeyPatch
 ) -> None:

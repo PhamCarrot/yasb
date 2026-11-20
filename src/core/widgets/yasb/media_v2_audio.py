@@ -230,7 +230,6 @@ class MediaAudioPanel(QFrame):
         identify(self, "media-audio", "media-audio")
         self.controller = controller
         self._syncing = False
-        self._page_active = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, round(9 * scale), 0, 0)
         layout.setSpacing(round(8 * scale))
@@ -340,23 +339,11 @@ class MediaAudioPanel(QFrame):
     def reset(self) -> None:
         self._update(balance=0.0, mono=False, swap=False, dynamics=0)
 
-    def set_active(self, active: bool, *, preserve_motion: bool = False) -> None:
-        entering = active and not self._page_active
-        self._page_active = active
-        if not active:
-            if not preserve_motion:
-                for effect in self.intro:
-                    effect.finish()
-        elif entering and self.isVisible() and not preserve_motion:
-            for effect in self.intro:
-                effect.replay()
-        self.sync()
-
     def sync(self) -> None:
         state = self.controller.audio_state
         available = self.controller.audio_available
         self._syncing = True
-        tooltip = ""
+        detail = ""
         try:
             self.balance.setValue(round(state.balance * 100))
             amount = abs(state.balance)
@@ -386,7 +373,6 @@ class MediaAudioPanel(QFrame):
                 if available
                 else "Dynamic equalizer requires ready native audio processing. Graphic EQ does not support it."
             )
-            self.adaptive.setToolTip(dynamic_help)
             self.adaptive.setAccessibleDescription(dynamic_help)
             if self.controller.restoring:
                 text = (
@@ -402,17 +388,17 @@ class MediaAudioPanel(QFrame):
                 text = "Saving settings…"
             elif self.isVisible():
                 observation = self.controller.native_observation
+                detail = observation.detail
                 text = (
                     ("Bypass confirmed" if state.bypass else "Processing frames confirmed")
                     if observation.processing
                     else "Saved; waiting for native processing"
                 )
-                tooltip = observation.detail
             else:
                 text = "Saved"
             self.detail.setText(text)
-            self.detail.setToolTip(tooltip)
             self.detail.setAccessibleName(text)
+            self.detail.setAccessibleDescription(detail)
         finally:
             self._syncing = False
 
@@ -420,12 +406,9 @@ class MediaAudioPanel(QFrame):
         super().showEvent(a0)
         self.sync()
         self._poll.start()
-        if self._page_active:
-            for effect in self.intro:
-                effect.replay()
+        for effect in self.intro:
+            effect.replay()
 
     def hideEvent(self, a0: QHideEvent | None) -> None:
-        for effect in self.intro:
-            effect.finish()
         self._poll.stop()
         super().hideEvent(a0)

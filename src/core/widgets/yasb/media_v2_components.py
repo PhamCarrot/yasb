@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QStyle,
     QStyleOption,
+    QStyleOptionButton,
     QStyleOptionComboBox,
     QStylePainter,
     QWidget,
@@ -168,6 +169,17 @@ class MediaButton(QPushButton):
             refresh_widget_style(self)
 
 
+class MediaSourceButton(MediaButton):
+    """Informational player badge; keep the full name for accessibility."""
+
+    def initStyleOption(self, option: QStyleOptionButton | None) -> None:
+        super().initStyleOption(option)
+        if option is not None:
+            area = cast(QStyle, self.style()).subElementRect(QStyle.SubElement.SE_PushButtonContents, option, self)
+            text = self.fontMetrics().elidedText(option.text, Qt.TextElideMode.ElideRight, area.width())
+            option.text = text.replace("&", "&&")
+
+
 class MediaComboBox(QComboBox):
     """Selector model backed by a reliably anchored player menu."""
 
@@ -202,7 +214,13 @@ class MediaComboBox(QComboBox):
             return
         option = QStyleOptionComboBox()
         self.initStyleOption(option)
-        option.currentText = self._display_label
+        field = cast(QStyle, self.style()).subControlRect(
+            QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxEditField, self
+        )
+        option.textAlignment = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        option.currentText = self.fontMetrics().elidedText(
+            self._display_label, Qt.TextElideMode.ElideRight, max(0, field.width() - 4)
+        )
         painter = QStylePainter(self)
         painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
         painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
@@ -270,7 +288,7 @@ class MediaComboBox(QComboBox):
         self._menu_options = options
         current = self.currentIndex()
         for index, (sid, label, enabled) in enumerate(options):
-            action = self.popup_menu.addAction(label)
+            action = self.popup_menu.addAction(label.replace("&", "&&"))
             assert action is not None
             action.setData(sid)
             action.setCheckable(True)
@@ -1006,7 +1024,7 @@ class SeekSlider(QSlider):
         if self._wave_amplitude > 0.001 and fill.width() > 0:
             baseline = track.top() + self._scale
             swell = 0.84 + 0.16 * math.cos(self._wave_phase * 1.1 + math.pi)
-            wave_end = min(track.right(), max(fill.right(), track.left() + 64 * self._scale))
+            wave_end = min(track.right(), fill.right())
             for factor, alpha, taper, wavelength, phase in (
                 (0.65, 0.5, 130, 1.75, self._wave_phase),
                 (0.71 * swell, 0.9, 105, 1.05, 2.2 * self._wave_phase + 1.8),

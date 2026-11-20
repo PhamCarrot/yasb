@@ -162,9 +162,7 @@ class LyricsService(QObject):
     @staticmethod
     def _normalize_providers(providers: tuple[Provider, ...] | list[Provider]) -> tuple[Provider, ...]:
         normalized = tuple(
-            provider
-            for provider in providers
-            if provider in ("lrclib", "netease", "better_lyrics", "musixmatch")
+            provider for provider in providers if provider in ("lrclib", "netease", "better_lyrics", "musixmatch")
         )
         if not normalized or len(set(normalized)) != len(normalized):
             return ("lrclib", "netease", "better_lyrics")

@@ -12,7 +12,7 @@ Media V2's popup design and motion are inspired by the media widget in [Serpanti
 **Media V2**
 
 - Bar artwork, title, timeline, and transport controls.
-- One-click `Via ...` player selection with automatic and manual modes.
+- A centered output-device name and a centered `Via …` badge for one player. With multiple players, the badge becomes a selector with automatic and manual modes.
 - Configurable popup layout, artwork position, progress display, background, disc visualizer, and equalizer.
 - Independent bar and popup scrolling, artwork size, and proportional control sizes.
 - Lyrics tab with bounded online lookup through an ordered provider chain, line/word timing when supplied, browsing and captured click/keyboard seek.
@@ -194,4 +194,4 @@ The popup has themed Equalizer, Audio and Lyrics tabs. Lyrics lookup follows `po
 
 Dragging an equalizer band after selecting a preset preserves the other bands. Choose **Apply** to save a custom curve. Preset names stay visible during transitions, and scrolling over the tab strip keeps the current tab selected.
 
-The ordinary Windows package is built from `src` with `python build.py build` and `python build.py bdist_msi`. The build selects x64 or ARM64 resources and writes the installer under `src/dist/out/`. The optional native Media V2 DSP is built separately on x64 Windows with `python -m src.build_media_dsp` and is not installed by that command.
+To run this fork from source on Windows, build from `src` with `python build.py build`, then launch `dist\yasb.exe`. The build selects resources for the Python architecture. Ordinary presets use Equalizer APO when it is enabled for the selected Windows output. The optional x64 native processor adds adaptive EQ and dynamics. [Media V2 setup](MEDIA_V2_GUIDE.md)

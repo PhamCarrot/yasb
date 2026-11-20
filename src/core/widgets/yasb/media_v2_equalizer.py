@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import PyQt6.QtCore as QtCore
-from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRect, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QHideEvent,
@@ -32,7 +32,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.utils.tooltip import set_tooltip
 from core.validation.widgets.yasb.media_v2 import MediaEqualizerConfig
 from core.widgets.services.media.equalizer_apo import EqualizerApoController
 from core.widgets.yasb.media_v2_components import CancellableSlider, MediaButton, MediaText, identify
@@ -530,6 +529,7 @@ class EqualizerPanel(QFrame):
         self.options = options
         self.preset = options.preset
         self._edited_drag: tuple[GainSlider, object] | None = None
+        self._drag_has_edited = False
         self.effect_mode = getattr(options, "preset_effect", "lightning")
         self.effect_speed = float(getattr(options, "effect_speed", 1.0))
         self.buttons: dict[str, MediaButton] = {}
@@ -544,7 +544,7 @@ class EqualizerPanel(QFrame):
 
         self.main_layout = layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(s(12))
+        layout.setSpacing(s(16))
         self.header = identify(QFrame(self), "media-equalizer-header", "equalizer-header")
         self.header_layout = header = QHBoxLayout(self.header)
         header.setContentsMargins(0, 0, 0, 0)
@@ -609,7 +609,6 @@ class EqualizerPanel(QFrame):
                 button.setCheckable(True)
                 button.setFixedHeight(s(28))
                 button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-                set_tooltip(button, f"Apply {name} equalizer preset")
 
                 def select(checked: bool = False, name: str = name) -> None:
                     self.select_preset(name)
@@ -631,6 +630,7 @@ class EqualizerPanel(QFrame):
 
             def interrupt(slider: GainSlider = slider) -> None:
                 self._edited_drag = None
+                self._drag_has_edited = False
                 self._interrupt(slider)
 
             def release(slider: GainSlider = slider, index: int = index) -> None:
@@ -699,33 +699,36 @@ class EqualizerPanel(QFrame):
         values = self.options.custom_bands if name == "Custom" else PRESETS[name]
         self._edited_drag = None
         self.preset = name
-        if not self.apo.apply_preset(values):
-            self._present_gains(self.apo.editing_gains)
+        accepted = self.apo.apply_preset(values)
+        if not accepted or tuple(values) != self.apo.editing_gains:
+            self._present_gains(self.apo.editing_gains, motion=accepted)
             return
-        if tuple(values) != self.apo.editing_gains:
-            self._present_gains(self.apo.editing_gains)
-            return
-        for slider, gain in zip(self.bands.sliders, values):
-            if motion and self.isVisible():
-                animate(slider, "gain", float(gain), self._duration(350), QEasingCurve.Type.OutQuart)
-            else:
-                settle(slider)
-                slider.gain = float(gain)
-            set_tooltip(slider, f"Gain: {float(gain):+g} dB")
+        self._show_gains(tuple(values), motion)
         self._sync_selection()
-        if motion and self.isVisible():
-            if self.effect_mode != "none":
-                self.bands.trigger(self.effect_mode, self.effect_speed)
+        if motion and self._page_active and self.isVisible() and self.effect_mode != "none":
+            self.bands.trigger(self.effect_mode, self.effect_speed)
 
-    def _present_gains(self, values: tuple[float, ...]):
+    def _show_gains(self, values: tuple[float, ...], motion: bool) -> None:
+        visible = self._page_active and self.isVisible()
+        for slider, gain in zip(self.bands.sliders, values):
+            tween = cast(dict[str, QPropertyAnimation], getattr(slider, "_motion", {})).get("gain")
+            if visible and slider.isSliderDown():
+                continue
+            if motion and visible:
+                if tween is None or tween.state() != QPropertyAnimation.State.Running or tween.endValue() != gain:
+                    animate(slider, "gain", float(gain), self._duration(350), QEasingCurve.Type.OutQuart)
+            else:
+                if tween is not None:
+                    tween.stop()
+                slider.gain = float(gain)
+
+    def _present_gains(self, values: tuple[float, ...], *, motion: bool = True):
         """Hydrate shared intent without submitting a write or starting a preset effect."""
         self._edited_drag = None
         self.preset = next((name for name, gains in PRESETS.items() if tuple(gains) == values), "Custom")
-        for slider, gain in zip(self.bands.sliders, values):
-            settle(slider)
-            slider.gain = float(gain)
-            set_tooltip(slider, f"Gain: {float(gain):+g} dB")
-        self._sync_selection()
+        self._show_gains(values, motion and self.preset != "Custom")
+        if not self._hold_drag_header():
+            self._sync_selection()
 
     def _interrupt(self, slider: GainSlider):
         animation = getattr(slider, "_motion", {}).get("gain")
@@ -737,7 +740,6 @@ class EqualizerPanel(QFrame):
             return
         self._interrupt(slider)
         slider.gain_value = float(value)
-        set_tooltip(slider, f"Gain: {round(value):+d} dB")
         # A tween only changes presentation. Untouched bands come from the
         # controller's complete preset or the most recent complete draft.
         curve = list(self.apo.editing_gains)
@@ -745,23 +747,28 @@ class EqualizerPanel(QFrame):
         accepted, draft = self.apo.edit_custom(curve, expected_draft=expected_draft)
         if not accepted or draft is not None and self.apo.draft_identity is not draft:
             slider.cancel_interaction()
-            self._present_gains(self.apo.editing_gains)
+            self._present_gains(self.apo.editing_gains, motion=False)
         elif draft is not None:
             if slider.isSliderDown():
                 self._edited_drag = (slider, draft)
+                self._drag_has_edited = True
             self.preset = "Custom"
             self._sync_selection()
 
     def _release_custom(self, index: int, slider: GainSlider):
         edited, self._edited_drag = self._edited_drag, None
+        self._drag_has_edited = False
         if not self._page_active:
             return
         if edited is not None and edited[0] is slider:
             self._custom(index, slider, float(round(slider.gain_from_slider())), expected_draft=edited[1])
         slider.gain = self.apo.editing_gains[index]
+        self._sync_selection()
+        self._sync_apply()
 
     def discard_draft(self):
         self._edited_drag = None
+        self._drag_has_edited = False
         self.apo.discard_custom()
 
     def _apply_action(self):
@@ -775,8 +782,11 @@ class EqualizerPanel(QFrame):
             self.apo.apply_custom()
         self._sync_apply()
 
+    def _hold_drag_header(self) -> bool:
+        return self._drag_has_edited and any(slider.isSliderDown() for slider in self.bands.sliders)
+
     def apply_action_visible(self) -> bool:
-        """Show the header action only while it can change or recover state."""
+        """Show the header action while editing or when recovery is available."""
         if self.apply_button.text() in {"Apply", "Retry", "Reconnect", "Review", "Restore"}:
             return True
         status = self._status_detail.splitlines()[0] if self._status_detail else ""
@@ -825,28 +835,23 @@ class EqualizerPanel(QFrame):
             text, enabled = "Saving…", False
         else:
             text, enabled = ("Saved" if self.apo.enabled else "Visual only"), False
+        if self._hold_drag_header() and text in {"Saved", "Visual only", "Saving…"}:
+            text = "Apply"
         self.apply_button.setText(text)
         self.apply_button.setEnabled(enabled)
         self.apply_button.setAccessibleName("Apply equalizer changes" if text == "Apply" else text)
-        hint = {
-            "Apply": "Apply the complete draft curve",
-            "Reconnect": "Equalizer APO writer unavailable. Reconnect to continue.",
-            "Review": "Load the current curve before editing again.",
-        }.get(text, text)
-        set_tooltip(self.apply_button, "\n".join(filter(None, (hint, self._status_detail))))
+        self.apply_button.setAccessibleDescription(self._status_detail)
         if previous_text != text or previous_visible != self.apply_action_visible():
             self.header_changed.emit()
 
     def _on_apo_status(self, status: str, detail: str):
         self._status_detail = "\n".join(filter(None, (status, detail)))
         self.status.setText(status)
-        if detail:
-            set_tooltip(self.status, detail)
         self.status.setAccessibleDescription(detail)
         self.status.setVisible(bool(status) and not self.status.property("compact_header"))
         self.setAccessibleDescription("\n".join((status, detail)))
-        set_tooltip(self.current, self._status_detail)
-        set_tooltip(self.header, self._status_detail)
+        self.current.setAccessibleDescription(detail)
+        self.header.setAccessibleDescription(detail)
         self._sync_apply()
         self.header_changed.emit()
 

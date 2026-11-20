@@ -8472,7 +8472,7 @@
           "type": "number"
         },
         "framerate": {
-          "default": 30,
+          "default": 60,
           "maximum": 60,
           "minimum": 15,
           "title": "Framerate",
@@ -9044,7 +9044,7 @@
           "type": "integer"
         },
         "animation_duration_ms": {
-          "default": 650,
+          "default": 320,
           "maximum": 5000,
           "minimum": 0,
           "title": "Animation Duration Ms",

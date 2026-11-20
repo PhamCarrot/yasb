@@ -1,10 +1,9 @@
 # Active Media V2 checkpoint
 
-## Source publication
+## Current release
 
-The 2.0.9 source is on the fork's main branch at `a7d7c7a5`. The
-[current handoff](NEXT_SESSION_HANDOFF.md) records packaging, public CI
-and the remaining startup issue.
+See the [current handoff](NEXT_SESSION_HANDOFF.md) for the release scope,
+verification and remaining checks. The entries below record earlier sessions.
 
 ## Archived startup trace
 

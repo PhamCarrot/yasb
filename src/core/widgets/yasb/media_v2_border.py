@@ -67,7 +67,8 @@ class MediaBorder(QFrame):
         self._palette_started = 0.0
         self._artwork_colors = True
         self._timer = QTimer(self)
-        self._timer.setInterval(max(8, round(1000 / max(1, self.framerate))))
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.setInterval(max(8, 1000 // max(1, self.framerate)))
         self._timer.timeout.connect(self._tick)
 
     def _get_artworkColors(self):
