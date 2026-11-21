@@ -1,113 +1,95 @@
-# Media V2 native audio processor
+# Media V2 Native Audio Processor
 
-The optional native processor adds adaptive EQ, stereo balance, channel mixing
-and dynamics to Media V2. It uses Equalizer APO on the Windows default playback
-device. Use a YASB build from this fork with a Media V2 widget already configured.
-The processor supports x64 Windows and shared-mode stereo playback at 44.1, 48,
-88.2, 96, 176.4 or 192 kHz.
+The native audio processor is an optional add-on for the [Media V2](../MEDIA_V2_GUIDE.md) widget. It adds a dynamic equalizer, stereo balance, mono, channel swap and dynamic range control to the popup. It runs inside [Equalizer APO](https://sourceforge.net/projects/equalizerapo/) on the Windows default playback device.
 
-## Build and place the DLL
+> [!NOTE]
+> The processor is x64 only and is not included in the YASB installer. It works with shared-mode stereo playback at 44.1, 48, 88.2, 96, 176.4 or 192 kHz.
 
-Use x64 Python 3.14 or later and Visual Studio or Visual Studio Build Tools
-with **Desktop development with C++**, MSVC x64/x86 tools and a Windows SDK.
-From the root of your checkout of this fork, run in PowerShell:
+## Requirements
+
+- A YASB build from this fork with a Media V2 widget in your `config.yaml`.
+- x64 Python 3.14 or later.
+- Visual Studio or Visual Studio Build Tools with **Desktop development with C++**, the MSVC x64/x86 tools and a Windows SDK.
+- Equalizer APO (x64), installed for your default playback device.
+
+## Build the DLL
+
+From the root of the repository, run:
 
 ```powershell
 python -m src.build_media_dsp
 ```
 
-The build writes `YASBMediaProcessor.dll`, `build.json` and third-party notices
-under `build/media-dsp/`. Copy the DLL, receipt and notices into a permanent,
-versioned local folder. Both your YASB account and the Windows audio host need
-read and execute access to the DLL. For example, use a folder under the
-Equalizer APO installation, with administrator permission for the copy if
-required. Replace the example path below with the actual deployed path. Run
-the hash command on **your own deployed DLL** and use the 64 lowercase hexadecimal
-characters it prints for `native_sha256`.
+The build writes `YASBMediaProcessor.dll`, `build.json` and the third-party licenses to `build/media-dsp/`.
+
+Copy them to a permanent folder that both your user account and the Windows audio service can read and execute, for example a folder under the Equalizer APO installation. Then get the SHA-256 of the copied DLL:
 
 ```powershell
 $dll = 'C:\Program Files\EqualizerAPO\VSTPlugins\YASBMediaDSP-v1\YASBMediaProcessor.dll'
 (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant()
 ```
 
-If this YASB profile already uses the native processor, keep the old DLL and
-back up the profile, its `media-dsp` records and the managed APO configuration
-before upgrading. YASB checks the saved DLL path, hash and build and blocks an
-unreviewed change. Keep using the existing binding until you have a migration
-that preserves the saved EQ and Audio settings.
+## Configuration
 
-## Attach Equalizer APO and configure Media V2
+Add the options below to the `popup.equalizer` section of your Media V2 widget, with your own DLL path and hash.
 
-1. Install x64 Equalizer APO. Open **Equalizer APO Device Selector** (called
-   **Configurator** in older versions), select the Windows default multimedia
-   output under playback devices and follow its restart prompt. If you switch
-   to another output, check that device's attachment too.
-   [Equalizer APO installation and troubleshooting](https://sourceforge.net/p/equalizerapo/wiki/Documentation/)
-2. In the active YASB profile's `config.yaml`, merge these keys into
-   `widgets.<your Media V2 widget ID>.options.popup.equalizer`. Use your
-   existing widget ID in place of `media_v2` and preserve its other options.
-   Substitute the actual absolute DLL path and the hash from PowerShell.
+```yaml
+media_v2:
+  type: "yasb.media_v2.MediaWidgetV2"
+  options:
+    popup:
+      equalizer:
+        backend: "equalizer_apo"
+        apo:
+          enabled: true
+          processor: "native"
+          native_library: 'C:\Program Files\EqualizerAPO\VSTPlugins\YASBMediaDSP-v1\YASBMediaProcessor.dll'
+          native_sha256: "<your lowercase SHA-256>"
+          manage_include: true
+```
 
-   ```yaml
-   widgets:
-     media_v2:
-       type: "yasb.media_v2.MediaWidgetV2"
-       options:
-         popup:
-           equalizer:
-             backend: equalizer_apo
-             apo:
-               enabled: true
-               target_device: default
-               processor: native
-               native_library: 'C:\Program Files\EqualizerAPO\VSTPlugins\YASBMediaDSP-v1\YASBMediaProcessor.dll'
-               native_sha256: '<your lowercase SHA-256>'
-               manage_include: true
-   ```
+Then:
 
-3. `manage_include: true` lets YASB maintain its Include block in
-   `config/config.txt` under the Equalizer APO installation. If you manage that
-   file, set `manage_include: false` and ensure it contains one copy of this
-   block. YASB needs write access to the managed configuration directory. It
-   generates `yasb-media-v2-eq.txt` for the endpoint selected in Windows.
+1. Open the **Equalizer APO Device Selector** (**Configurator** in older versions), select your default playback device and restart when asked. Repeat this if you switch to another output device.
+2. Reload YASB and open the Media V2 popup.
 
-   ```text
-   # BEGIN YASB MEDIA V2 EQ
-   Include: yasb-media-v2-eq.txt
-   # END YASB MEDIA V2 EQ
-   ```
+With `manage_include: true` YASB adds its `Include` line to Equalizer APO's `config.txt`. If you manage that file yourself, set it to `false` and add the block below once.
 
-4. From the YASB tray menu, select **Reload YASB**, then open the Media V2
-   popup. YASB sets up the native route or restores the saved settings on load.
+```text
+# BEGIN YASB MEDIA V2 EQ
+Include: yasb-media-v2-eq.txt
+# END YASB MEDIA V2 EQ
+```
 
-## Use the controls and check playback
+> [!NOTE]
+> YASB remembers the DLL path, hash and build, and refuses a DLL that has changed. Before you replace the DLL, keep the old one and back up your YASB config folder and the Equalizer APO config folder.
 
-- **Equalizer → Dynamic** replaces the manual EQ with an adaptive correction
-  learned from playback. Turn Dynamic off to return to the saved manual curve.
-  Click **Apply** on any pending manual changes before enabling Dynamic if you
-  want to keep those edits.
-- **Audio** has stereo balance, **Mono audio**, **Swap L/R**, and **Dynamic
-  range** with **Off**, **Balanced** and **Night**. These controls save
-  automatically. Mono averages left and right into both channels and disables
-  balance and Swap. The saved stereo settings resume when Mono is turned off.
-  With Mono off, use a known left/right recording to check that Swap exchanges
-  the channels.
-- Play audio through the attached output and watch the status under **Audio**:
-  - **Processing frames confirmed** (or **Bypass confirmed** while bypassed)
-    means recent frames advanced with the saved settings acknowledged and host
-    latency settled.
-  - **Saved; audio host has not connected** means YASB has saved the settings
-    and is waiting for the host.
-  - **Audio host connected; unsupported sample rate** means the playback
-    format is outside the supported rates listed above.
-  - **Audio host connected; waiting for playback frames** means a host is
-    connected with no recent frame progress, which can occur when playback is
-    idle.
-  - **Audio frames arriving; host latency update pending** or **Audio frames
-    arriving; waiting for settings confirmation** means the playing stream is
-    still settling; give it time.
+## Controls
 
-  Silent buffers can also advance frame counters. Use a known audible signal
-  to verify sound and channel orientation.
+- **Dynamic** (Equalizer tab): Replaces the manual equalizer with a correction that adapts to what is playing. Turn it off to return to your saved curve. Click **Apply** first if you have unsaved band changes, otherwise they are discarded.
+- **Balance** (Audio tab): Stereo balance between left and right.
+- **Mono audio** (Audio tab): Mixes left and right into both channels. Balance and Swap are disabled while it is on.
+- **Swap L/R** (Audio tab): Swaps the left and right channels.
+- **Dynamic range** (Audio tab): `Off`, `Balanced` or `Night`.
+- **Reset** (Audio tab): Resets balance, mono, swap and dynamic range.
 
-[Media V2 widget options and Equalizer APO troubleshooting](../MEDIA_V2_GUIDE.md)
+Changes on the Audio tab are saved automatically.
+
+## Status Messages
+
+The Audio tab shows the state of the processor while audio is playing.
+
+| Status | Description |
+| --- | --- |
+| Processing frames confirmed | The processor is running with your saved settings. |
+| Bypass confirmed | The processor is running and bypassed. |
+| Saved; audio host has not connected | The settings are saved and YASB is waiting for Equalizer APO to load the processor. |
+| Audio host connected; unsupported sample rate | The playback format is not one of the supported sample rates. |
+| Audio host connected; waiting for playback frames | The processor is loaded but no audio is passing through it, for example when playback is idle. |
+| Audio frames arriving; host latency update pending | The stream is still settling. Wait a moment. |
+| Audio frames arriving; waiting for settings confirmation | The stream is still settling. Wait a moment. |
+
+> [!NOTE]
+> Silence also counts as playback, so the status alone does not prove that you hear the processed sound. Use a recording you know to check the result and the left and right channels.
+
+For the equalizer options and Equalizer APO troubleshooting see [Media V2](../MEDIA_V2_GUIDE.md).
