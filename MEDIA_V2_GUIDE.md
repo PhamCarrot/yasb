@@ -573,7 +573,8 @@ SHA-256. The default `graphic_eq` processor keeps the ordinary Equalizer APO
 file behavior. [Build, configure and use the native processor](https://github.com/PhamCarrot/yasb/blob/main/docs/MEDIA_V2_NATIVE_AUDIO.md).
 
 During playback the Audio tab reports whether a native host has connected,
-whether frames are advancing, and whether the host has a latency update pending.
+whether the stream's sample rate is supported, whether frames are advancing,
+and whether the host has a latency update pending.
 “Processing frames confirmed” requires recent callbacks for the saved revision.
 
 Native state is profile- and endpoint-bound. The previous managed GraphicEQ
@@ -631,6 +632,7 @@ box and the tab strip reachable. Larger custom styles can use the section's
 inner scroll area.
 
 The Audio tab provides balance, mono, channel swap, Dynamic range and Reset.
+Mono disables balance and channel swap until it is turned off.
 Reset keeps Dynamic EQ and bypass state while resetting balance, mono, channel
 swap and dynamics. The Dynamic control lives in the lower-section header. When
 it is active, the manual EQ page is dimmed and a page-scoped overlay blocks
