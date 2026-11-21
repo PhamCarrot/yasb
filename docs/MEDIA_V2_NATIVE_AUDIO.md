@@ -51,7 +51,7 @@ that preserves the saved EQ and Audio settings.
    ```yaml
    widgets:
      media_v2:
-       type: "yasb.media_v2.MediaV2Widget"
+       type: "yasb.media_v2.MediaWidgetV2"
        options:
          popup:
            equalizer:
@@ -92,14 +92,22 @@ that preserves the saved EQ and Audio settings.
   balance and Swap. The saved stereo settings resume when Mono is turned off.
   With Mono off, use a known left/right recording to check that Swap exchanges
   the channels.
-- Play audio through the attached output and watch the status under **Audio**.
-  **Processing frames confirmed** means recent frames advanced with the saved
-  settings acknowledged and host latency settled. **Saved; audio host has not
-  connected** means YASB has saved the settings and is waiting for the host.
-  **Waiting for playback frames** means a host is connected with no recent
-  frame progress, which can occur when playback is idle. During latency or
-  settings confirmation, give the playing stream time to settle. Silent
-  buffers can also advance frame counters. Use a known audible signal to
-  verify sound and channel orientation.
+- Play audio through the attached output and watch the status under **Audio**:
+  - **Processing frames confirmed** (or **Bypass confirmed** while bypassed)
+    means recent frames advanced with the saved settings acknowledged and host
+    latency settled.
+  - **Saved; audio host has not connected** means YASB has saved the settings
+    and is waiting for the host.
+  - **Audio host connected; unsupported sample rate** means the playback
+    format is outside the supported rates listed above.
+  - **Audio host connected; waiting for playback frames** means a host is
+    connected with no recent frame progress, which can occur when playback is
+    idle.
+  - **Audio frames arriving; host latency update pending** or **Audio frames
+    arriving; waiting for settings confirmation** means the playing stream is
+    still settling; give it time.
+
+  Silent buffers can also advance frame counters. Use a known audible signal
+  to verify sound and channel orientation.
 
 [Media V2 widget options and Equalizer APO troubleshooting](../MEDIA_V2_GUIDE.md)
