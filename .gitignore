@@ -27,3 +27,12 @@ build_x64/
 .cache
 # IDE files
 compile_commands.json
+# Local working notes
+docs/NEXT_SESSION_HANDOFF.md
+docs/MEDIA_V2_NEXT_CHAT_KICKOFF.md
+docs/MEDIA_V2_PLAN.md
+docs/MEDIA_V2_FINAL_CHECKLIST.md
+docs/MEDIA_V2_UI_REGRESSIONS.md
+docs/MEDIA_V2_OPTIONAL_DSP_TRIAL.md
+docs/ACTIVE_MEDIA_BATCH.md
+docs/history/
