@@ -12,6 +12,7 @@ from PyQt6.QtGui import (
     QColor,
     QHideEvent,
     QLinearGradient,
+    QMouseEvent,
     QPainter,
     QPainterPath,
     QPaintEvent,
@@ -107,11 +108,14 @@ class GainSlider(CancellableSlider):
     """One-dB user slider with a high-resolution presentation range for animation."""
 
     SCALE = 100
+    pointer_released = pyqtSignal()
 
     def __init__(self, parent: QWidget | None) -> None:
         super().__init__(Qt.Orientation.Vertical, parent)
         self.gain_value = 0.0
         self.programmatic = False
+        self.pointer_held = False
+        self._handle_press: QPoint | None = None
         self._effect_phase = 1600.0
         self._effect_index = 0
         self.effect_mode = "none"
@@ -119,6 +123,48 @@ class GainSlider(CancellableSlider):
         self.setRange(-12 * self.SCALE, 12 * self.SCALE)
         self.setSingleStep(self.SCALE)
         self.setPageStep(self.SCALE)
+
+    def mousePressEvent(self, ev: QMouseEvent | None) -> None:
+        if self.pointer_held and ev is not None and ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        if ev is not None and ev.button() == Qt.MouseButton.LeftButton:
+            self.pointer_held = True
+            option = QStyleOptionSlider()
+            self.initStyleOption(option)
+            handle = cast(QStyle, self.style()).subControlRect(
+                QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
+            )
+            point = ev.position().toPoint()
+            self._handle_press = point if handle.contains(point) else None
+        self.programmatic = self._handle_press is not None
+        try:
+            super().mousePressEvent(ev)
+        finally:
+            self.programmatic = False
+
+    def mouseMoveEvent(self, ev: QMouseEvent | None) -> None:
+        if ev is not None and ev.position().toPoint() == self._handle_press:
+            return
+        self._handle_press = None
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev: QMouseEvent | None) -> None:
+        if self.pointer_held and ev is not None and ev.button() != Qt.MouseButton.LeftButton:
+            ev.ignore()
+            return
+        held = self.pointer_held
+        self.pointer_held = False
+        self._handle_press = None
+        down = self.isSliderDown()
+        super().mouseReleaseEvent(ev)
+        if held and not down:
+            self.pointer_released.emit()
+
+    def cancel_interaction(self) -> None:
+        self.pointer_held = False
+        self._handle_press = None
+        super().cancel_interaction()
 
     def _get_gain(self):
         return self.gain_value
@@ -530,6 +576,7 @@ class EqualizerPanel(QFrame):
         self.preset = options.preset
         self._edited_drag: tuple[GainSlider, object] | None = None
         self._drag_has_edited = False
+        self.apply_action_visible = False
         self.effect_mode = getattr(options, "preset_effect", "lightning")
         self.effect_speed = float(getattr(options, "effect_speed", 1.0))
         self.buttons: dict[str, MediaButton] = {}
@@ -639,6 +686,7 @@ class EqualizerPanel(QFrame):
             slider.valueChanged.connect(change)
             slider.sliderPressed.connect(interrupt)
             slider.sliderReleased.connect(release)
+            slider.pointer_released.connect(release)
         values = self.options.custom_bands if self.preset == "Custom" else PRESETS[self.preset]
         self.apo.start(values)
         self._sync_apply()
@@ -785,16 +833,9 @@ class EqualizerPanel(QFrame):
     def _hold_drag_header(self) -> bool:
         return self._drag_has_edited and any(slider.isSliderDown() for slider in self.bands.sliders)
 
-    def apply_action_visible(self) -> bool:
-        """Show the header action while editing or when recovery is available."""
-        if self.apply_button.text() in {"Apply", "Retry", "Reconnect", "Review", "Restore"}:
-            return True
-        status = self._status_detail.splitlines()[0] if self._status_detail else ""
-        return status not in {"", "Saved", "Visual only", "Applying…", "Saving…", "Loading…"}
-
     def _sync_apply(self):
         previous_text = self.apply_button.text()
-        previous_visible = self.apply_action_visible()
+        previous_visible = self.apply_action_visible
         adaptive = self.apo.audio_state.adaptive
         restoring = self.apo.restoring
         restore_required = self.apo.restore_required
@@ -809,6 +850,8 @@ class EqualizerPanel(QFrame):
             else:
                 self.adaptiveMix = 1.0 if adaptive else 0.0
         for slider in self.bands.sliders:
+            if not available and (slider.pointer_held or slider.isSliderDown()):
+                slider.cancel_interaction()
             slider.setEnabled(available)
         for button in self.buttons.values():
             button.setEnabled(available)
@@ -835,13 +878,24 @@ class EqualizerPanel(QFrame):
             text, enabled = "Saving…", False
         else:
             text, enabled = ("Saved" if self.apo.enabled else "Visual only"), False
-        if self._hold_drag_header() and text in {"Saved", "Visual only", "Saving…"}:
-            text = "Apply"
+        status = self._status_detail.partition("\n")[0]
+        show_status = status not in {"", "Saved", "Visual only", "Applying…", "Saving…", "Loading…"}
+        if text in {"Apply", "Saved", "Visual only", "Saving…"} and any(
+            slider.pointer_held or slider.isSliderDown() for slider in self.bands.sliders
+        ):
+            if previous_visible and previous_text == "Apply":
+                text = "Apply"
+            elif text == "Apply":
+                text, enabled = ("Saved" if self.apo.enabled else "Visual only"), False
+        visible = show_status or text in {"Apply", "Retry", "Reconnect", "Review", "Restore"}
+        if not visible and previous_text == "Apply" and self.status.property("compact_header"):
+            text = previous_text
+        self.apply_action_visible = visible
         self.apply_button.setText(text)
         self.apply_button.setEnabled(enabled)
         self.apply_button.setAccessibleName("Apply equalizer changes" if text == "Apply" else text)
         self.apply_button.setAccessibleDescription(self._status_detail)
-        if previous_text != text or previous_visible != self.apply_action_visible():
+        if previous_text != text or previous_visible != visible:
             self.header_changed.emit()
 
     def _on_apo_status(self, status: str, detail: str):

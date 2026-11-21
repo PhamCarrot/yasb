@@ -135,10 +135,6 @@ class HeaderSlot(QFrame):
         widget.setMaximumWidth(16777215)
         self.widgets.append(widget)
 
-    @property
-    def has_content(self) -> bool:
-        return self._presented is not None
-
     def present(
         self, widget: QWidget | None, width: int, duration: int, motion: bool = True, *, reflow: bool = False
     ) -> None:
@@ -151,10 +147,12 @@ class HeaderSlot(QFrame):
             motion = animation is not None and animation.state() == QPropertyAnimation.State.Running
             if animation is not None and motion:
                 duration = max(1, animation.duration() - animation.currentTime())
-        self.content_width = content_width
         self._presented = widget
-        for child in self.widgets:
-            child.setVisible(widget is not None and child is widget)
+        self.setEnabled(widget is not None)
+        if widget is not None:
+            self.content_width = content_width
+            for child in self.widgets:
+                child.setVisible(child is widget)
         target = float(width if widget is not None else 0)
         if motion and self.isVisible():
             animate(self, "extent", target, duration, QEasingCurve.Type.OutCubic)
@@ -309,24 +307,18 @@ class MediaSections(QObject):
         self._previous = QShortcut(QKeySequence("Ctrl+Shift+Tab"), panel)
         self._previous.activated.connect(lambda: self.tabs.setCurrentIndex((self.active_index - 1) % len(self.pages)))
 
-    def _sync_header(self, *, motion: bool = True, caption_changed: bool = False, navigating: bool = False) -> None:
+    def _sync_header(self, *, motion: bool = True, caption_changed: bool = False) -> None:
         scale = self._header_scale
         index = self.active_index
         button = (self.panel.apply_button, self.audio.reset_button, self.lyrics.retry_button)[index]
         minimum, padding = ((68, 26), (84, 46), (54, 26))[index]
-        action_visible = index == 1 or (index == 0 and self.panel.apply_action_visible())
+        action_visible = index == 1 or (index == 0 and self.panel.apply_action_visible)
         width = (
             max(round(minimum * scale), button.fontMetrics().horizontalAdvance(button.text()) + round(padding * scale))
             if action_visible
             else 0
         )
-        action_visibility_changed = self.action_slot.has_content != action_visible
-        self.action_slot.present(
-            button if action_visible else None,
-            width,
-            400,
-            motion and (navigating or not action_visibility_changed),
-        )
+        self.action_slot.present(button if action_visible else None, width, 400, motion)
         preset_width = self.panel.current.sizeHint().width()
         self.preset_slot.present(
             self.panel.current if index == 0 else None, preset_width, 400, motion, reflow=caption_changed
@@ -369,7 +361,7 @@ class MediaSections(QObject):
         self.audio.adaptive.setVisible(index == 0)
         self.lyrics.retry_button.setVisible(index == 2)
         self.lyrics.set_active(index == 2)
-        self._sync_header(navigating=True)
+        self._sync_header()
         for number, page in enumerate(self.pages):
             page.selected = number == index
             self._set_interactive(number, page.selected)

@@ -78,8 +78,10 @@ def media_section_styles(
 .media-v2-popup .media-audio .audio-value {{ color: #cba6f7; font-size: {s(11.5)}px; font-weight: bold; }}
 .media-v2-popup #media-audio-adaptive {{ color: #cdd6f4; font-size: {s(11.5)}px; selection-background-color: #cba6f7; }}
 .media-v2-popup .media-audio QCheckBox {{ selection-background-color: #cba6f7; }}
-.media-v2-popup .media-audio .audio-dynamics {{ background: #313244; border: none; border-radius: {radius}px; }}
-.media-v2-popup .media-audio .audio-dynamics::tab {{ color: #a6adc8; border: none; min-height: {s(28)}px; border-radius: {radius}px; padding: 0 {s(6)}px; font-size: {s(11.5)}px; }}
+.media-v2-popup .media-audio .audio-dynamics {{ background: #313244; border: none; border-radius: {radius}px; padding: {s(1)}px; }}
+.media-v2-popup .media-audio .audio-dynamics::tab {{ color: #a6adc8; background: transparent; border: none; min-height: {s(26)}px; border-radius: 0; padding: 0 {s(6)}px; font-size: {s(11.5)}px; }}
+.media-v2-popup .media-audio .audio-dynamics::tab:first {{ margin-left: {s(1)}px; border-top-left-radius: {radius}px; border-bottom-left-radius: {radius}px; }}
+.media-v2-popup .media-audio .audio-dynamics::tab:last {{ margin-right: {s(1)}px; border-top-right-radius: {radius}px; border-bottom-right-radius: {radius}px; }}
 .media-v2-popup .media-audio .audio-dynamics::tab:selected {{ color: #1e1e2e; background: #cba6f7; }}
 .media-v2-popup .media-audio .audio-dynamics::tab:disabled {{ color: #7f849c; }}
 .media-v2-popup .media-audio .audio-dynamics::tab:selected:disabled {{ background: #45475a; color: #a6adc8; }}

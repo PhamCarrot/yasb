@@ -1,10 +1,9 @@
 # Optional native media processor
 
-This optional Windows x64 processor now has an offline-tested resident control
-route through the existing shared APO writer. Default `processor: graphic_eq`
-loads no native DLL or broker. `processor: native` requires an explicitly prepared
-DLL path/hash and selected-profile binding. Nothing has been installed, registered
-or activated on a live Equalizer APO endpoint by this work.
+This optional Windows x64 processor uses a resident control route through the
+shared APO writer. The default `processor: graphic_eq` uses the static Equalizer
+APO route. `processor: native` requires a prepared DLL path, hash and selected
+profile binding.
 
 Implemented: ten Q=1 peaking filters (32–16000 Hz), full-curve coefficient ramps
 over 20 ms, mono averaging, channel swap, linear balance (inactive in mono),
@@ -77,7 +76,8 @@ The real APO host's negotiation/channel mapping/restricted permissions remain op
 
 Protocol3 uses Parameters72, Bootstrap360, Status232 and PeerReport320 bytes.
 The ordinary-user broker is a local message pipe with exclusive first instance,
-remote rejection, protected controller SID/SYSTEM data rights and owner checking.
+remote rejection and owner checking. The controller owns the pipe. LocalSystem
+and the Windows Audio service SID have client data and query rights.
 The controller principal is trusted; this is not executable attestation or a
 security boundary between programs running under the same SID. Kernel client PID,
 exact source build, config/endpoint keys, random instance UUID, stream epoch,

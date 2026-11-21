@@ -30,6 +30,7 @@ Media V2's popup design and motion are inspired by the media widget in [Serpanti
 ### 3. Guides
 
 - [Media V2 guide](MEDIA_V2_GUIDE.md)
+- [Install and use the Media V2 native audio processor](docs/MEDIA_V2_NATIVE_AUDIO.md)
 - [Media Visualizer Label guide](MEDIA_VISUALIZER_LABEL_GUIDE.md)
 
 ---

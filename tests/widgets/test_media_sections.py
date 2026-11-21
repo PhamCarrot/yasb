@@ -492,8 +492,15 @@ def test_audio_hydration_is_read_only_mono_retains_balance_and_reset_is_whole(qa
         panel.sync()
         assert controller.calls == []
         assert panel.balance.value() == 20 and panel.dynamics.currentIndex() == 2
+        panel.swap.click()
+        assert panel.swap.isChecked()
         panel.mono.click()
-        assert controller.calls == [{"mono": True}]
+        assert not panel.swap.isEnabled() and panel.swap.isChecked()
+        panel.swap.click()
+        assert controller.calls == [{"swap": True}, {"mono": True}]
+        panel.mono.click()
+        assert panel.swap.isEnabled() and panel.swap.isChecked()
+        panel.mono.click()
         assert not panel.balance.isEnabled() and panel.balance.value() == 20
         panel.balance_scale._fade.setCurrentTime(75)
         assert 0.45 < panel.balance_scale.dim.opacity() < 1.0
@@ -502,13 +509,14 @@ def test_audio_hydration_is_read_only_mono_retains_balance_and_reset_is_whole(qa
         assert panel.balance_value.isEnabled()
         panel.reset()
         assert controller.audio_state == NativeAudioState()
-        assert len(controller.calls) == 2
+        assert len(controller.calls) == 5
         assert panel.balance.isEnabled() and panel.balance.value() == 0
         assert panel.adaptive.isEnabled() and "retains the manual curve" in panel.adaptive.accessibleDescription()
+        calls_before_sync = controller.calls.copy()
         controller.audio_available = False
         panel.sync()
         assert not panel.adaptive.isEnabled() and "Graphic EQ" in panel.adaptive.accessibleDescription()
-        assert len(controller.calls) == 2
+        assert controller.calls == calls_before_sync
     finally:
         parent.hide()
         sip.delete(parent)
@@ -526,6 +534,7 @@ def test_audio_poll_lifetime_and_accessible_status(qapp: QApplication) -> None:
         assert panel.adaptive.toolTip() == ""
         assert panel.detail.toolTip() == ""
         assert panel.detail.accessibleDescription() == "Owned disconnected fixture"
+        assert panel.detail.text() == "Saved; audio host has not connected"
         controller.native_observation = NativeObservation(detail="")
         panel.sync()
         assert panel.detail.toolTip() == ""
@@ -600,7 +609,7 @@ def test_dynamic_header_input_belongs_to_equalizer_after_reparenting(
         assert audio.adaptive.isVisible() and audio.adaptive.isEnabled()
         qt_test.mouseClick(audio.adaptive, Qt.MouseButton.LeftButton)
         assert controller.calls == [{"adaptive": True}]
-        assert audio.adaptive.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        assert audio.adaptive.focusPolicy() == Qt.FocusPolicy.TabFocus
         popup.sections.tabs.setCurrentIndex(1)
         assert not audio.adaptive.isVisible()
         qt_test.keyClick(audio.adaptive, Qt.Key.Key_Space)
@@ -679,17 +688,43 @@ def test_returning_to_preset_keeps_header_stable_until_slider_release(
         ).center()
         qt_test.mousePress(slider, Qt.MouseButton.LeftButton, pos=point)
         qt_test.mouseMove(slider, point + QPoint(0, 20))
-        assert panel.apo.has_draft and panel.apply_button.isEnabled() and panel.current.text() == "Custom"
-        width = sections.action_slot.width()
-        assert width > 0
+        assert panel.apo.has_draft and panel.current.text() == "Custom"
+        assert panel.apply_button.isHidden() and sections.action_slot.width() == 0
+        qt_test.mouseClick(slider, Qt.MouseButton.RightButton, pos=point + QPoint(0, 20))
+        assert slider.pointer_held and slider.isSliderDown() and panel.apply_button.isHidden()
         qt_test.mouseMove(slider, point)
         slider.setSliderPosition(5 * slider.SCALE)
         assert slider.isSliderDown() and not panel.apo.has_draft
-        assert panel.apply_button.text() == "Apply" and not panel.apply_button.isEnabled()
-        assert panel.current.text() == "Custom" and sections.action_slot.width() == width
+        assert panel.apply_button.isHidden() and not panel.apply_button.isEnabled()
+        assert panel.current.text() == "Custom" and sections.action_slot.width() == 0
         qt_test.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=point)
         assert panel.current.text() == "Bass" and panel.buttons["Bass"].isChecked()
         assert panel.apply_button.isHidden() and sections.action_slot.width() == 0 and not panel.apo.has_draft
+
+        qt_test.mousePress(slider, Qt.MouseButton.LeftButton, pos=point)
+        qt_test.mouseMove(slider, point + QPoint(0, 20))
+        assert panel.apply_button.isHidden()
+        qt_test.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=point + QPoint(0, 20))
+        assert panel.apo.has_draft and panel.apply_button.text() == "Apply" and panel.apply_button.isEnabled()
+        slot = sections.action_slot
+        animation = cast(dict[str, QPropertyAnimation], getattr(slot, "_motion"))["extent"]
+        animation.setCurrentTime(100)
+        assert 0 < slot.width() < slot.content_width
+        sections.finish()
+        slider.initStyleOption(option)
+        edited_handle = style.subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider
+        ).center()
+        qt_test.mousePress(slider, Qt.MouseButton.LeftButton, pos=edited_handle)
+        qt_test.mouseMove(slider, point)
+        slider.setSliderPosition(5 * slider.SCALE)
+        assert not panel.apo.has_draft and panel.apply_button.isVisible() and not panel.apply_button.isEnabled()
+        assert slot.width() == slot.content_width
+        qt_test.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=point)
+        animation.setCurrentTime(100)
+        assert 0 < slot.width() < slot.content_width and panel.apply_button.isVisible()
+        sections.finish()
+        assert slot.width() == 0 and panel.apply_button.isHidden()
     finally:
         dispose(parent, popup)
 
@@ -760,5 +795,72 @@ def test_audio_segmented_dynamics_accepts_keys_only_on_selected_page(
         popup.sections.tabs.setCurrentIndex(0)
         qt_test.keyClick(audio.dynamics, Qt.Key.Key_Left)
         assert controller.calls == [{"dynamics": 1}]
+    finally:
+        dispose(parent, popup)
+
+
+def test_audio_switches_and_segmented_selection_animate_without_mouse_focus(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    try:
+        popup.open_at_parent()
+        sections = popup.sections
+        panel = sections.audio
+        controller = AudioController()
+        panel.controller = cast(EqualizerApoController, controller)
+        controller.draft_changed.connect(panel.sync)
+        panel.sync()
+        for effect in popup._intro:
+            effect.finish()
+        sections.tabs.setFocus(Qt.FocusReason.TabFocusReason)
+        for switch in (panel.adaptive, panel.mono, panel.swap):
+            if switch is panel.mono:
+                sections.tabs.setCurrentIndex(1)
+                sections.finish()
+                for effect in panel.intro:
+                    effect.finish()
+            qt_test.mouseClick(switch, Qt.MouseButton.LeftButton)
+            assert switch.isChecked() and not switch.hasFocus()
+            motion = cast(dict[str, QPropertyAnimation], getattr(switch, "_motion"))["mix"]
+            motion.setCurrentTime(100)
+            assert 0 < switch.mix < 1
+            partial = switch.mix
+            qt_test.mouseClick(switch, Qt.MouseButton.LeftButton)
+            assert not switch.isChecked() and motion.startValue() == partial
+            motion.setCurrentTime(250)
+            assert switch.mix == 0
+        sections.tabs.setFocus(Qt.FocusReason.TabFocusReason)
+        qt_test.mouseClick(panel.balance, Qt.MouseButton.LeftButton, pos=panel.balance.rect().center())
+        assert not panel.balance.hasFocus()
+        pill = panel.dynamics
+        qt_test.mouseClick(pill, Qt.MouseButton.LeftButton, pos=pill.tabRect(0).center())
+        tween = cast(dict[str, QPropertyAnimation], getattr(pill, "_motion"))["position"]
+        tween.setCurrentTime(90)
+        assert 0 < pill.position < 2
+        ink = QColor("#cba6f7")
+        snapshot = pill.grab().toImage()
+        x = round(pill.tabRect(0).left() + pill.tabRect(0).width() * pill.position) + 12
+        assert snapshot.pixelColor(x, 5) == ink
+        tween.setCurrentTime(1)
+        initial = pill.grab().toImage()
+        label = pill.tabRect(0).adjusted(10, 5, -10, -5)
+        assert any(
+            initial.pixelColor(x, y).lightness() > 120
+            for x in range(label.left(), label.right())
+            for y in range(label.top(), label.bottom())
+        )
+        for index in (0, 1, 2):
+            pill.setCurrentIndex(index)
+            tween.setCurrentTime(250)
+            qapp.processEvents()
+            tab = pill.tabRect(index)
+            image = pill.grab().toImage()
+            assert image.pixelColor(tab.center().x(), 5) == ink
+            if index == 1:
+                assert image.pixelColor(tab.left() + 1, 2) == ink
+            else:
+                outer = tab.left() if index == 0 else tab.right()
+                assert image.pixelColor(outer, 0) != ink
     finally:
         dispose(parent, popup)

@@ -560,7 +560,7 @@ the controls intentionally affect only the Media V2 display.
 
 ## Manual changes and Apply
 
-Moving a band or releasing its slider changes a draft only. **Apply** commits the complete curve. Returning to the preset values while dragging holds the header steady until release. Closing the popup or leaving the Equalizer section discards unsubmitted edits. There is no legacy autosave mode; `write_debounce_ms` remains readable for configuration compatibility and has no effect.
+After selecting a preset, drag a band and release it. **Apply** slides into view if the curve differs from the saved values. Releasing at the original value keeps it hidden. If Apply is already visible, it stays in place during the next drag and slides closed on release if all values match again. Keyboard changes start the reveal as soon as the value changes. Click **Apply** to save the complete curve. Closing the popup or leaving Equalizer discards unsubmitted edits. The deprecated `write_debounce_ms` option is ignored.
 
 Preset buttons remain immediate actions. Popups using the same managed file share committed/applied state; a second popup cannot overwrite or cancel another popup's active draft. Closing the editing popup releases its draft lease. Output-device changes retarget the shared committed curve, not an unsubmitted draft.
 
@@ -568,26 +568,19 @@ Preset buttons remain immediate actions. Popups using the same managed file shar
 
 ## Native processor
 
-The optional `native` processor uses an absolute DLL path and its prepared
+The optional x64 `native` processor uses an absolute DLL path and its prepared
 SHA-256. The default `graphic_eq` processor keeps the ordinary Equalizer APO
-file behavior. Build the optional x64 DLL from the repository root with:
+file behavior. [Build, configure and use the native processor](https://github.com/PhamCarrot/yasb/blob/main/docs/MEDIA_V2_NATIVE_AUDIO.md).
 
-```powershell
-python -m src.build_media_dsp
-```
-
-This writes `YASBMediaProcessor.dll`, its build receipt and vendor notices to
-`build/media-dsp/`. The command does not install or activate the DLL in
-Equalizer APO. Native processing is reported separately from persistence, so a
-successful save does not confirm endpoint processing. A missing processor or a
-disconnected host remains unavailable and does not silently select another
-processor.
+During playback the Audio tab reports whether a native host has connected,
+whether frames are advancing, and whether the host has a latency update pending.
+“Processing frames confirmed” requires recent callbacks for the saved revision.
 
 Native state is profile- and endpoint-bound. The previous managed GraphicEQ
 leaf is retained as `yasb-media-v2-eq.txt.yasb-native-backup`, and the native
-state record keeps its own first `.json.backup`. Native settings use the same
-Apply flow as the manual curve. Audio actions use the committed curve and keep
-an unsubmitted EQ draft intact.
+state record keeps its own first `.json.backup`. Manual bands use **Apply**.
+Audio settings save automatically using the committed curve. Enabling
+**Dynamic** discards an unsubmitted manual draft and retains the saved curve.
 
 ## Equalizer APO files
 
@@ -615,7 +608,7 @@ config.txt.yasb-backup
 
 ## Equalizer APO limitations
 
-- Equalizer APO must already be installed and configured for the Windows output device.
+- If a saved preset sounds unchanged, open Equalizer APO’s Device Selector and check the playback device named in the popup. Select that output if needed and follow the restart prompt. Switching to a different DAC or monitor can require selecting that device too.
 - Media V2 currently supports only `target_device: "default"`.
 - Changing the Windows default output retargets the committed EQ curve. Manual edits take effect after Apply.
 - The `graphic_eq` processor writes a device-specific 10-band `GraphicEQ`. The `native` processor writes its validated native route payload instead.

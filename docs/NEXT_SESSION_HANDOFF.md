@@ -1,12 +1,43 @@
 # Media V2 release handoff
 
-## Current scope
+## Audio controls and Equalizer Apply, 21 November 2026
+
+The native broker grants client access to the Windows Audio service SID. The
+Audio tab distinguishes a disconnected host, idle playback, pending latency and
+confirmed processing. Mono disables Swap and balance while retaining their
+settings for stereo. The Audio controls animate and keep a focus cue for keyboard
+navigation. Equalizer Apply appears on pointer release and animates when the
+action opens or closes. A press without movement preserves the preset.
+
+See the [native audio setup guide](MEDIA_V2_NATIVE_AUDIO.md) for the optional
+processor and the [regression list](MEDIA_V2_UI_REGRESSIONS.md) for interaction
+checks. Existing native bindings require a reviewed migration.
+
+The publication checks built the x64 native DLL, matched its SHA-256 against the
+build receipt and validated the setup example against the widget schema. The
+focused Windows run passed 205 cases across the popup sections, Equalizer Apply,
+native DSP and transport, and the APO ownership and recovery paths. All 25
+transport cases passed again after the ACL and exclusive-instance assertions
+were confirmed in separate tests. Ruff lint and format checks passed for all
+eight changed Python files. Pyright reported zero errors and warnings. Three
+Windows layout cases still report 3, 3 and 6 px of vertical scroll range at 75%,
+100% and 200%, matching the previous build. All three passed offscreen.
+[Layout regression test](../tests/widgets/test_media_fidelity.py)
+
+Earlier checks confirmed callback progress on an attached playback device and a
+channel exchange with Dynamic EQ enabled. The original settings were restored.
+The full suite passed 2,798 cases with one unavailable AMD library skipped before
+the final contrast and Mono changes. The 57 focused Windows tests after the contrast
+change preceded the final Mono check. Audio quality and wider endpoint coverage
+remain open.
+
+## Previous release scope
 
 The output-device name and the single-player Via badge center in their own fields. When several players are available, the selected player's caption aligns to the right before the arrow. Long captions shorten in place. The selector preserves literal ampersands and gives duplicate sessions distinct names. The title tooltip follows the active track, including the loading and empty states.
 
 The popup keeps its staged entrance, tab transitions and animated preset changes. Dragging a band creates a draft until Apply. See the [user guide](../MEDIA_V2_GUIDE.md) for configuration and the [regression list](MEDIA_V2_UI_REGRESSIONS.md) for the interactions to repeat. The Windows release uses the normal YASB source, assets and tests layout.
 
-## Release verification
+## Previous release verification
 
 Checked 20 November 2026 against base `0d01fb26`. The full x64 suite passed 2,796 cases and skipped one hardware check because `atiadlxx.dll` was unavailable. Ruff, compilation and strict Pyright passed. Freshly exporting all 60 widget definitions reproduced the release schema byte for byte. The standalone ZIP contained 252 verified files, including the project license. All 31 checked frozen modules matched source. Only the standalone build command ran.
 

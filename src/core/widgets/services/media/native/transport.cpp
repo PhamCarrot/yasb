@@ -291,9 +291,10 @@ public:
     explicit Broker(const Bootstrap& bootstrap) : bootstrap_(bootstrap), name_(pipe_name(bootstrap.installation)) {
         checked(stop_.valid() && wake_.valid());
         if (current_sid() != bootstrap.controller_sid.data()) throw WinFailure{ERROR_ACCESS_DENIED};
-        // The controller principal is trusted. SYSTEM clients get data/mode/query
-        // rights, excluding FILE_CREATE_PIPE_INSTANCE. No Everyone/remote access.
-        std::string sddl = "O:" + current_sid() + "D:P(A;;GA;;;" + current_sid() + ")(A;;0x00120183;;;SY)";
+        constexpr auto audio_service_sid = "S-1-5-80-2676549577-1911656217-2625096541-4178041876-1366760775";
+        const auto controller = current_sid();
+        std::string sddl = "O:" + controller + "D:P(A;;GA;;;" + controller +
+            ")(A;;0x00120183;;;SY)(A;;0x00120183;;;" + audio_service_sid + ")";
         PSECURITY_DESCRIPTOR descriptor = nullptr;
         checked(ConvertStringSecurityDescriptorToSecurityDescriptorA(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) != FALSE);
         security_.value = descriptor;

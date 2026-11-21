@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
+import PyQt6.QtCore as QtCore
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
+    QEnterEvent,
     QHideEvent,
     QIcon,
     QPainter,
@@ -25,6 +28,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QStyle,
     QStyleOptionSlider,
+    QStyleOptionTab,
     QStylePainter,
     QTabBar,
     QVBoxLayout,
@@ -33,7 +37,14 @@ from PyQt6.QtWidgets import (
 
 from core.widgets.services.media.equalizer_apo import EqualizerApoController
 from core.widgets.yasb.media_v2_components import CancellableSlider, MediaButton, identify
-from core.widgets.yasb.media_v2_motion import RevealEffect
+from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
+
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
+
+
+def keyboard_focus(widget: QWidget) -> bool:
+    window = widget.window()
+    return widget.hasFocus() and window is not None and window.testAttribute(Qt.WidgetAttribute.WA_KeyboardFocusChange)
 
 
 class AudioActionButton(MediaButton):
@@ -94,7 +105,25 @@ class AudioSwitch(QCheckBox):
         self.scale = scale
         self.compact = compact
         self.setMinimumHeight(round((16 if compact else 24) * scale))
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._mix = 0.0
+        self.toggled.connect(self._move_switch)
+
+    def _move_switch(self, checked: bool) -> None:
+        if self.isVisible():
+            animate(self, "mix", float(checked), 250)
+        else:
+            settle(self)
+            self.mix = float(checked)
+
+    def _set_mix(self, value: float) -> None:
+        self._mix = value
+        self.update()
+
+    def _get_mix(self) -> float:
+        return self._mix
+
+    mix: float = pyqtProperty(float, _get_mix, _set_mix)
 
     def hitButton(self, pos: QPoint) -> bool:
         return self.rect().contains(pos)
@@ -114,29 +143,68 @@ class AudioSwitch(QCheckBox):
         painter.drawText(
             title, Qt.AlignmentFlag.AlignVCenter if self.compact else Qt.AlignmentFlag.AlignTop, self.text()
         )
-        accent = self.palette().color(QPalette.ColorRole.Highlight) if self.isChecked() else QColor("#45475a")
+        off = QColor("#45475a")
+        on = self.palette().color(QPalette.ColorRole.Highlight)
+        accent = QColor.fromRgbF(
+            off.redF() + (on.redF() - off.redF()) * self._mix,
+            off.greenF() + (on.greenF() - off.greenF()) * self._mix,
+            off.blueF() + (on.blueF() - off.blueF()) * self._mix,
+        )
         if not self.isEnabled():
             accent.setAlphaF(0.45)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(accent)
         painter.drawRoundedRect(track, knob / 2, knob / 2)
         diameter = knob * 0.72
-        x = track.right() - diameter - knob * 0.14 if self.isChecked() else track.left() + knob * 0.14
+        x = track.left() + knob * 0.14 + (width - knob) * self._mix
         painter.setBrush(ink)
         painter.drawEllipse(QRectF(x, track.top() + knob * 0.14, diameter, diameter))
-        if self.hasFocus():
+        if keyboard_focus(self):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(ink)
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
 
 
 class BalanceSlider(CancellableSlider):
+    def __init__(self, orientation: Qt.Orientation, parent: QWidget) -> None:
+        super().__init__(orientation, parent)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self._zoom = 1.0
+        self.sliderPressed.connect(lambda: animate(self, "zoom", 1.25, 150))
+        self.sliderReleased.connect(lambda: animate(self, "zoom", 1.12 if self.underMouse() else 1.0, 150))
+
+    def _set_zoom(self, value: float) -> None:
+        self._zoom = value
+        self.update()
+
+    def _get_zoom(self) -> float:
+        return self._zoom
+
+    zoom: float = pyqtProperty(float, _get_zoom, _set_zoom)
+
+    def enterEvent(self, event: QEnterEvent | None) -> None:
+        super().enterEvent(event)
+        if self.isEnabled() and not self.isSliderDown():
+            animate(self, "zoom", 1.12, 150)
+
+    def leaveEvent(self, a0: QEvent | None) -> None:
+        super().leaveEvent(a0)
+        if not self.isSliderDown():
+            animate(self, "zoom", 1.0, 150)
+
+    def cancel_interaction(self) -> None:
+        super().cancel_interaction()
+        settle(self)
+        self.zoom = 1.0
+
     def paintEvent(self, ev: QPaintEvent | None) -> None:
         style = self.style()
         if ev is None or style is None:
             return
         option = QStyleOptionSlider()
         self.initStyleOption(option)
+        if not keyboard_focus(self):
+            option.state &= ~QStyle.StateFlag.State_HasFocus
         control = QStyle.ComplexControl.CC_Slider
         groove = QRectF(style.subControlRect(control, option, QStyle.SubControl.SC_SliderGroove, self))
         handle = style.subControlRect(control, option, QStyle.SubControl.SC_SliderHandle, self)
@@ -155,11 +223,70 @@ class BalanceSlider(CancellableSlider):
             painter.fillRect(QRectF(min(center, thumb), groove.top(), abs(thumb - center), groove.height()), color)
             painter.restore()
         option.subControls = QStyle.SubControl.SC_SliderHandle
+        painter.save()
+        handle_center = QRectF(handle).center()
+        painter.translate(handle_center)
+        painter.scale(self._zoom, self._zoom)
+        painter.translate(-handle_center)
         painter.drawComplexControl(control, option)
-        if self.hasFocus():
+        painter.restore()
+        if keyboard_focus(self):
             focus = option.rect.adjusted(1, 1, -1, -1)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(self.palette().color(QPalette.ColorRole.Highlight))
             painter.drawRoundedRect(focus, 5, 5)
+
+
+class DynamicsTabs(QTabBar):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._position = 0.0
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.currentChanged.connect(self._select)
+
+    def _select(self, index: int) -> None:
+        if self.isVisible():
+            animate(self, "position", float(index), 250)
+        else:
+            settle(self)
+            self.position = float(index)
+
+    def _set_position(self, value: float) -> None:
+        self._position = value
+        self.update()
+
+    def _get_position(self) -> float:
+        return self._position
+
+    position: float = pyqtProperty(float, _get_position, _set_position)
+
+    def paintEvent(self, a0: QPaintEvent | None) -> None:
+        if self._position == self.currentIndex() or self.count() < 2:
+            super().paintEvent(a0)
+            return
+        painter = QStylePainter(self)
+        options: list[QStyleOptionTab] = []
+        for index in range(self.count()):
+            option = QStyleOptionTab()
+            self.initStyleOption(option, index)
+            options.append(option)
+            background = QStyleOptionTab(option)
+            background.state &= ~(QStyle.StateFlag.State_Selected | QStyle.StateFlag.State_HasFocus)
+            painter.drawControl(QStyle.ControlElement.CE_TabBarTabShape, background)
+        position = max(0.0, min(self.count() - 1.0, self._position))
+        before = int(position)
+        origin, end = self.tabRect(before), self.tabRect(min(self.count() - 1, before + 1))
+        highlight = QStyleOptionTab(options[self.currentIndex()])
+        highlight.rect.moveLeft(round(origin.left() + (end.left() - origin.left()) * (position - before)))
+        painter.drawControl(QStyle.ControlElement.CE_TabBarTabShape, highlight)
+        for option in options:
+            option.state &= ~QStyle.StateFlag.State_Selected
+            painter.drawControl(QStyle.ControlElement.CE_TabBarTabLabel, option)
+        painter.setClipRect(highlight.rect)
+        for option in options:
+            if option.rect.intersects(highlight.rect):
+                option.state |= QStyle.StateFlag.State_Selected
+                painter.drawControl(QStyle.ControlElement.CE_TabBarTabLabel, option)
 
 
 class BalanceScale(QFrame):
@@ -265,6 +392,7 @@ class MediaAudioPanel(QFrame):
         self.mono.setObjectName("media-audio-mono")
         self.swap = AudioSwitch("Swap L/R", scale, self.flags)
         self.swap.setObjectName("media-audio-swap")
+        self.swap.setAccessibleDescription("Exchanges left and right stereo channels. Inactive in mono.")
         self.mono.toggled.connect(self._mono_changed)
         self.swap.toggled.connect(self._swap_changed)
         for switch in (self.mono, self.swap):
@@ -280,13 +408,12 @@ class MediaAudioPanel(QFrame):
         dynamics_row = QHBoxLayout(self.dynamics_card)
         dynamics_row.setContentsMargins(round(14 * scale), round(9 * scale), round(14 * scale), round(9 * scale))
         dynamics_row.addWidget(QLabel("Dynamic range", self.dynamics_card), 1)
-        self.dynamics = identify(QTabBar(self.dynamics_card), "media-audio-dynamics", "audio-dynamics")
+        self.dynamics = identify(DynamicsTabs(self.dynamics_card), "media-audio-dynamics", "audio-dynamics")
         self.dynamics.setAccessibleName("Dynamics mode")
         self.dynamics.setFixedSize(round(210 * scale), round(28 * scale))
         self.dynamics.setExpanding(True)
         self.dynamics.setDrawBase(False)
         self.dynamics.setUsesScrollButtons(False)
-        self.dynamics.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         for name in ("Off", "Balanced", "Night"):
             self.dynamics.addTab(name)
         self.dynamics.currentChanged.connect(self._dynamics_changed)
@@ -364,10 +491,12 @@ class MediaAudioPanel(QFrame):
             self.swap.setChecked(state.swap)
             self.adaptive.setChecked(state.adaptive)
             self.dynamics.setCurrentIndex(state.dynamics)
-            for widget in (self.mono, self.swap, self.adaptive, self.dynamics, self.reset_button):
+            for widget in (self.mono, self.adaptive, self.dynamics, self.reset_button):
                 widget.setEnabled(available)
-            self.balance.setEnabled(available and not state.mono)
-            self.balance_scale.set_muted(not available or state.mono)
+            stereo_available = available and not state.mono
+            self.swap.setEnabled(stereo_available)
+            self.balance.setEnabled(stereo_available)
+            self.balance_scale.set_muted(not stereo_available)
             dynamic_help = (
                 "Learns a bounded correction from audio and retains the manual curve."
                 if available
@@ -389,11 +518,7 @@ class MediaAudioPanel(QFrame):
             elif self.isVisible():
                 observation = self.controller.native_observation
                 detail = observation.detail
-                text = (
-                    ("Bypass confirmed" if state.bypass else "Processing frames confirmed")
-                    if observation.processing
-                    else "Saved; waiting for native processing"
-                )
+                text = observation.playback_status(state.bypass)
             else:
                 text = "Saved"
             self.detail.setText(text)

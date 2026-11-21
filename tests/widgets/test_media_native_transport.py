@@ -128,6 +128,30 @@ def test_broker_first_instance_is_exclusive(api: NativeDspApi) -> None:
         assert replacement.reports() == ()
 
 
+def test_broker_grants_audio_service_client_rights_only(api: NativeDspApi) -> None:
+    route = binding(api)
+    name = "YASB.MediaDSP.v3." + route.installation.hex()
+    inspect = r"""
+$ErrorActionPreference = 'Stop'
+$rights = [System.IO.Pipes.PipeAccessRights]0x00120183
+$pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', $name, $rights, 0, 1, 0)
+try {
+    $pipe.Connect(2000)
+    $rules = $pipe.GetAccessControl().GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])
+    $service = [Security.Principal.NTAccount]::new('NT SERVICE', 'Audiosrv').Translate([Security.Principal.SecurityIdentifier])
+    $allowed = @($rules | Where-Object { $_.IdentityReference -eq $service -and $_.AccessControlType -eq 'Allow' })
+    if ($allowed.Count -ne 1 -or [int]$allowed[0].PipeAccessRights -ne [int]$rights) { exit 1 }
+} finally { $pipe.Dispose() }
+"""
+    with api.create(route):
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", f"$name='{name}'\n{inspect}"],
+            check=True,
+            capture_output=True,
+            timeout=12,
+        )
+
+
 def test_wrong_controller_sid_is_rejected(api: NativeDspApi) -> None:
     route = replace(binding(api), controller_sid="S-1-5-18")
     with pytest.raises(OSError):

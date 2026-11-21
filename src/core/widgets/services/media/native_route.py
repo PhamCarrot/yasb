@@ -83,6 +83,19 @@ class NativeObservation:
     detail: str = "Native DSP has no persisted route"
     advancing: bool = False
 
+    def playback_status(self, bypass: bool) -> str:
+        if self.processing:
+            return "Bypass confirmed" if bypass else "Processing frames confirmed"
+        if not self.reports:
+            return "Saved; audio host has not connected"
+        if any(row.status.processing == 2 for row in self.reports):
+            return "Audio host connected; unsupported sample rate"
+        if not self.advancing:
+            return "Audio host connected; waiting for playback frames"
+        if any(row.status.host_latency_pending for row in self.reports):
+            return "Audio frames arriving; host latency update pending"
+        return "Audio frames arriving; waiting for settings confirmation"
+
     @property
     def processing(self) -> bool:
         return (

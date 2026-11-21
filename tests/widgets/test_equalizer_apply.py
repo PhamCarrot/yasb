@@ -48,14 +48,18 @@ def owned_panel(
     return panel, writer
 
 
-def drag_band(slider: panel_module.GainSlider, distance: int) -> None:
+def handle_center(slider: panel_module.GainSlider) -> QPoint:
     option = QStyleOptionSlider()
     slider.initStyleOption(option)
-    start = (
+    return (
         cast(QStyle, slider.style())
         .subControlRect(QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, slider)
         .center()
     )
+
+
+def drag_band(slider: panel_module.GainSlider, distance: int) -> None:
+    start = handle_center(slider)
     end = start + QPoint(0, distance)
     qt_test.mousePress(slider, Qt.MouseButton.LeftButton, pos=start)
     assert slider.isSliderDown()
@@ -83,7 +87,16 @@ def test_mouse_drag_applies_only_edited_bands_during_preset_tween(
             assert 0 < sliders[1].gain < bass[1]
             generation = writer._generation
             managed = tmp_path / "config" / apo.MANAGED_FILENAME
-            drag_band(sliders[0], 18)
+            slider = sliders[0]
+            handle = handle_center(slider)
+            qt_test.mousePress(slider, Qt.MouseButton.LeftButton, pos=handle)
+            assert slider.isSliderDown() and panel.apply_button.isHidden()
+            qt_test.mouseMove(slider, handle + QPoint(0, 18))
+            await settled(qapp, writer)
+            assert panel.apo.has_draft and panel.apply_button.isHidden()
+            assert managed.read_bytes() == apo.render_managed_config(bass, OUTPUT.endpoint_guid).encode()
+            qt_test.mouseRelease(slider, Qt.MouseButton.LeftButton, pos=handle + QPoint(0, 18))
+            assert panel.apply_button.isVisible()
             first = sliders[0].gain_from_slider()
             assert first != bass[0]
             expected = (first, *bass[1:])
