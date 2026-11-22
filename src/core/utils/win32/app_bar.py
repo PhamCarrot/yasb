@@ -136,12 +136,6 @@ class Win32AppBar:
             self.app_bar_data.uCallbackMessage = self.callback_message
         self._send(AppBarMessage.New)
 
-    def window_pos_changed(self):
-        self._send(AppBarMessage.WindowPosChanged)
-
-    def query_appbar_position(self):
-        self._send(AppBarMessage.QueryPos)
-
     def set_position(self):
         self._send(AppBarMessage.SetPos)
 
