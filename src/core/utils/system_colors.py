@@ -18,12 +18,6 @@ class SystemColorsService:
             cls._instance = cls()
             cls._instance.start()
 
-    @classmethod
-    def stop_service(cls) -> None:
-        if cls._instance is not None:
-            cls._instance.stop()
-            cls._instance = None
-
     def __init__(self):
         self._settings = viewmanagement.UISettings()
         self._token = None
