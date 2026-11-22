@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, NamedTuple, cast
 
+import PyQt6.QtCore as QtCore
 from PyQt6.QtCore import (
     QAbstractListModel,
     QEasingCurve,
@@ -59,16 +60,16 @@ from core.widgets.yasb.media_v2_components import identify
 from core.widgets.yasb.media_v2_motion import FrameClock, animate
 
 BEFORE, CURRENT, AFTER = 0, 1, 2
+# pyqtProperty exists at runtime but is missing from the PyQt6 type stubs
+pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 # One glow mask never exceeds this many pixels, which bounds its cost on the GUI thread.
 GLOW_PIXELS = 120_000
 
 
 @dataclass(frozen=True)
 class LineLook:
-    """One resolved before, current or after style; None defers to the palette or the fade."""
+    """One resolved before, current or after style; None defers to the fade."""
 
-    color: QColor | None
-    background: QColor | None
     variant: int
     underline: bool
     strikethrough: bool
@@ -103,8 +104,6 @@ def resolve_looks(
             variants.append(key)
         looks.append(
             LineLook(
-                QColor(block.color) if block.color is not None else None,
-                QColor(block.background) if block.background is not None else None,
                 variants.index(key),
                 block.underline,
                 block.strikethrough,
@@ -411,11 +410,10 @@ class LyricsDelegate(QStyledItemDelegate):
 
     def state_colors(self) -> tuple[QColor, QColor, QColor]:
         view = self.view
-        before, current, after = view.looks
         return (
-            QColor(before.color) if before.color is not None else view.inactive_color,
-            QColor(current.color) if current.color is not None else view.active_color,
-            QColor(after.color) if after.color is not None else view.inactive_color,
+            view.side_color(BEFORE) or view.inactive_color,
+            view.side_color(CURRENT) or view.active_color,
+            view.side_color(AFTER) or view.inactive_color,
         )
 
     def _line_color(self, row: int, tint: float | None) -> QColor:
@@ -681,6 +679,19 @@ class LyricsDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+def _side_property(store: str, state: int) -> Any:
+    """A QSS-settable colour for one side; an invalid colour defers to the palette."""
+
+    def get(view: LyricsView) -> QColor:
+        return QColor(getattr(view, store)[state])
+
+    def set_(view: LyricsView, value: QColor) -> None:
+        getattr(view, store)[state] = QColor(value)
+        view.restyle()
+
+    return pyqtProperty(QColor, get, set_)
+
+
 class LyricsView(QListView):
     seek_requested = pyqtSignal(float, object)
 
@@ -697,13 +708,10 @@ class LyricsView(QListView):
         self.scale = scale
         self.options = options or MediaLyricsConfig()
         self.looks, self.variants = resolve_looks(self.options)
-        style_scales = [look.scale for look in self.looks if look.scale is not None]
-        has_background = any(look.background is not None for look in self.looks)
-        self._styled_geometry = (
-            tuple(sorted({look.variant for look in self.looks})),
-            max([1.0, *style_scales]),
-            round(self.options.style.background_padding * scale) if has_background else 0,
-        )
+        self._side_colors = [QColor(), QColor(), QColor()]
+        self._side_backgrounds = [QColor(), QColor(), QColor()]
+        self._glow_color = QColor()
+        self._styled_geometry = self._resolve_geometry()
         self.document: LyricsDocument | None = None
         self.position_ms: int | None = None
         self.identity: tuple[str, int] | None = None
@@ -752,12 +760,6 @@ class LyricsView(QListView):
         font.setPixelSize(max(1, round(self.options.font_size * scale)))
         font.setWeight(QFont.Weight(self.options.font_weight))
         self.setFont(font)
-        palette = self.palette()
-        if self.options.inactive_color is not None:
-            palette.setColor(QPalette.ColorRole.Text, QColor(self.options.inactive_color))
-        if self.options.active_color is not None:
-            palette.setColor(QPalette.ColorRole.Highlight, QColor(self.options.active_color))
-        self.setPalette(palette)
         self._return = QTimer(self)
         self._return.setSingleShot(True)
         self._return.setInterval(self.options.browse_return_ms)
@@ -961,8 +963,51 @@ class LyricsView(QListView):
             return RowLook(scale, opacity, tint, self._side_target(row, self.current_line), target, target, 1.0)
         return RowLook(scale, opacity, tint, self.line_side(row), self._line_start(row)[4], target, self._line_progress)
 
+    beforeColor: QColor = _side_property("_side_colors", BEFORE)
+    currentColor: QColor = _side_property("_side_colors", CURRENT)
+    afterColor: QColor = _side_property("_side_colors", AFTER)
+    beforeBackground: QColor = _side_property("_side_backgrounds", BEFORE)
+    currentBackground: QColor = _side_property("_side_backgrounds", CURRENT)
+    afterBackground: QColor = _side_property("_side_backgrounds", AFTER)
+
+    def _get_glowColor(self) -> QColor:
+        return QColor(self._glow_color)
+
+    def _set_glowColor(self, value: QColor) -> None:
+        self._glow_color = QColor(value)
+        self.restyle()
+
+    glowColor: QColor = pyqtProperty(QColor, _get_glowColor, _set_glowColor)
+
+    def side_color(self, state: int) -> QColor | None:
+        color = self._side_colors[state]
+        return QColor(color) if color.isValid() else None
+
+    def side_background(self, state: int) -> QColor | None:
+        color = self._side_backgrounds[state]
+        return QColor(color) if color.isValid() else None
+
+    def _resolve_geometry(self) -> tuple[tuple[int, ...], float, int]:
+        style_scales = [look.scale for look in self.looks if look.scale is not None]
+        has_background = any(color.isValid() for color in self._side_backgrounds)
+        return (
+            tuple(sorted({look.variant for look in self.looks})),
+            max([1.0, *style_scales]),
+            round(self.options.style.background_padding * self.scale) if has_background else 0,
+        )
+
+    def restyle(self) -> None:
+        """Apply colours set from the stylesheet; backgrounds can change the row padding."""
+        geometry = self._resolve_geometry()
+        self.delegate.glows.clear()
+        if geometry != self._styled_geometry:
+            self._styled_geometry = geometry
+            self.delegate.reset()
+            self.scheduleDelayedItemsLayout()
+        self.canvas.update()
+
     def background_color(self, look: RowLook) -> QColor | None:
-        before, current, after = (style.background for style in self.looks)
+        before, current, after = (self.side_background(state) for state in (BEFORE, CURRENT, AFTER))
         return mix_optional(mix_optional(before, after, look.side), current, look.tint)
 
     def glow_extent(self) -> int:
@@ -993,7 +1038,7 @@ class LyricsView(QListView):
             rows.update(row for row, start in self._line_from.items() if start[2] > 0)
         extent = self.glow_extent()
         strength = self.options.glow.strength
-        color = QColor(self.options.glow.color) if self.options.glow.color is not None else None
+        color = QColor(self._glow_color) if self._glow_color.isValid() else None
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         for row in sorted(rows):
             if not 0 <= row < len(self.rows.texts):

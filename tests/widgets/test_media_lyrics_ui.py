@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from functools import partial
+from pathlib import Path
 from typing import Any, cast
 
 import PyQt6.sip as sip
@@ -38,7 +39,7 @@ from core.widgets.services.media.model import (
     Timeline,
 )
 from core.widgets.yasb.media_v2_lyrics import MediaLyricsPanel
-from core.widgets.yasb.media_v2_lyrics_view import LyricsPlayhead, LyricsView
+from core.widgets.yasb.media_v2_lyrics_view import CURRENT, LyricsPlayhead, LyricsView
 from tests.widgets.test_media_lyrics_owner import run_loop as run_loop
 from tests.widgets.test_media_popup_geometry import make_popup
 
@@ -149,8 +150,6 @@ def test_lyrics_view_uses_configured_rendering_and_visibility(qapp: QApplication
         lines_before=1,
         lines_after=2,
         inactive_opacity=0.25,
-        active_color="#ff00aa",
-        inactive_color="#112233",
         font_family="Consolas",
         font_size=20,
         font_weight=500,
@@ -513,9 +512,13 @@ def record_update(updates: list[object], *args: object) -> None:
     updates.append(args)
 
 
-def styled_view(qapp: QApplication, document: LyricsDocument, width: int = 590, **lyrics: object) -> LyricsView:
+def styled_view(
+    qapp: QApplication, document: LyricsDocument, width: int = 590, css: str = "", **lyrics: object
+) -> LyricsView:
     parent = QWidget()
     view = LyricsView(1, parent, MediaLyricsConfig.model_validate(lyrics))
+    if css:
+        view.setStyleSheet(f".media-lyrics-view {{ {css} }}")
     view.resize(width, 235)
     view.set_document(document)
     view.accept_input = True
@@ -527,6 +530,31 @@ def styled_view(qapp: QApplication, document: LyricsDocument, width: int = 590, 
     return view
 
 
+def test_stylesheet_colors_drive_lyrics_and_backgrounds_resize_rows(qapp: QApplication, tmp_path: Path) -> None:
+    from core.utils.css_processor import CSSProcessor
+
+    sheet = tmp_path / "styles.css"
+    sheet.write_text(
+        ".media-lyrics-view { color: #112233; selection-background-color: #ff00aa; -qproperty-afterColor: #00ff00; "
+        "-qproperty-currentBackground: #ffffff40; -qproperty-glowColor: #ffffff; }",
+        encoding="utf-8",
+    )
+    processed = CSSProcessor(str(sheet)).process()
+    assert "-qproperty-" not in processed
+    view = styled_view(qapp, numbered(8), css=processed[processed.index("{") + 1 : processed.rindex("}")])
+    try:
+        view.set_position(3100, ("session", 1))
+        view.finish_line_motion()
+        assert (view.inactive_color, view.active_color) == (QColor("#112233"), QColor("#ff00aa"))
+        assert view.delegate.state_colors() == (QColor("#112233"), QColor("#ff00aa"), QColor("#00ff00"))
+        assert view.glowColor == QColor("#ffffff") and view.side_background(CURRENT) == QColor("#40ffffff")
+        assert view._styled_geometry[2] > 0
+        view.currentBackground = QColor()
+        assert view._styled_geometry[2] == 0 and view.side_background(CURRENT) is None
+    finally:
+        dispose_view(view)
+
+
 def numbered(count: int) -> LyricsDocument:
     return parse_lyrics("\n".join(f"[{index * 1000},900]Line {index}" for index in range(count)))
 
@@ -536,10 +564,10 @@ def test_state_styles_apply_per_side_and_keep_existing_precedence(qapp: QApplica
         qapp,
         numbered(8),
         inactive_opacity=0.25,
+        css="qproperty-beforeColor: #112233; qproperty-currentColor: #ff00aa; qproperty-afterColor: #00ff00;",
         style={
-            "before": {"color": "#112233", "opacity": 0.5},
-            "current": {"color": "#ff00aa", "scale": 1.2},
-            "after": {"color": "#00ff00"},
+            "before": {"opacity": 0.5},
+            "current": {"scale": 1.2},
         },
     )
     try:
@@ -570,9 +598,10 @@ def test_font_variants_decorations_and_backgrounds_follow_the_state(qapp: QAppli
         qapp,
         numbered(6),
         font_weight=400,
+        css="qproperty-currentBackground: #ff0000; qproperty-currentColor: #ffffff;",
         style={
             "before": {"italic": True, "strikethrough": True},
-            "current": {"bold": True, "background": "#ff0000", "color": "#ffffff"},
+            "current": {"bold": True},
             "after": {"bold": False, "underline": True},
         },
     )
@@ -654,11 +683,8 @@ def test_line_transition_blends_colour_opacity_scale_and_crossfades_variants(
         numbered(8),
         font_weight=400,
         animation_duration_ms=400,
-        style={
-            "before": {"color": "#000000"},
-            "current": {"color": "#ff0000", "bold": True},
-            "after": {"color": "#0000ff"},
-        },
+        css="qproperty-beforeColor: #000000; qproperty-currentColor: #ff0000; qproperty-afterColor: #0000ff;",
+        style={"current": {"bold": True}},
     )
     try:
         view.set_position(2100, ("session", 1))
@@ -695,9 +721,10 @@ def test_riced_options_stay_bounded_and_add_no_timers(qapp: QApplication, monkey
     view = styled_view(
         qapp,
         numbered(5000),
+        css="qproperty-beforeColor: #6c7086; qproperty-currentBackground: #33cba6f7;",
         style={
-            "before": {"italic": True, "color": "#6c7086", "opacity": 0.55},
-            "current": {"bold": True, "background": "#33cba6f7", "scale": 1.1},
+            "before": {"italic": True, "opacity": 0.55},
+            "current": {"bold": True, "scale": 1.1},
             "after": {"bold": False, "underline": True},
         },
         glow={"enabled": True, "radius": 10, "strength": 0.7},
@@ -828,7 +855,8 @@ def test_riced_rows_render_mixed_scripts_with_stable_heights(qapp: QApplication,
         qapp,
         document,
         font_weight=400,
-        style={"current": {"bold": True, "background": "#40ffffff"}, "before": {"italic": True}},
+        css="qproperty-currentBackground: #40ffffff;",
+        style={"current": {"bold": True}, "before": {"italic": True}},
         glow={"enabled": True},
     )
     try:
@@ -888,8 +916,10 @@ def test_playhead_absorbs_small_differences_and_snaps_otherwise() -> None:
     assert head.position() is None
 
 
-def sweep_view(qapp: QApplication, document: LyricsDocument, width: int = 590, **lyrics: object) -> LyricsView:
-    view = styled_view(qapp, document, width, word_highlight="sweep", **lyrics)
+def sweep_view(
+    qapp: QApplication, document: LyricsDocument, width: int = 590, css: str = "", **lyrics: object
+) -> LyricsView:
+    view = styled_view(qapp, document, width, css, word_highlight="sweep", **lyrics)
     view.playhead = LyricsPlayhead(FakeClock())
     return view
 
@@ -999,9 +1029,7 @@ def test_sweep_subscribes_only_while_visible_playing_and_on_screen(qapp: QApplic
 def test_sweep_frame_shows_an_intermediate_fill(qapp: QApplication) -> None:
     text = "MMMMMMMMMMMMMMMM"
     document = LyricsDocument((LyricLine(1000, 9000, text, (LyricWord(1000, 3000, text),)),))
-    view = sweep_view(
-        qapp, document, sweep_softness=0, style={"current": {"color": "#ff0000"}}, inactive_color="#0000ff"
-    )
+    view = sweep_view(qapp, document, sweep_softness=0, css="color: #0000ff; qproperty-currentColor: #ff0000;")
     try:
         redness: list[tuple[int, int]] = []
         for position in (1000, 2000, 3000):

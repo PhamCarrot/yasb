@@ -55,8 +55,7 @@ def media_section_styles(
     """Defaults for the lower popup controls at the application stylesheet level."""
     s: Callable[[float], int] = lambda value: round(value * scale)
     lyrics = lyrics or MediaLyricsConfig()
-    inactive = lyrics.inactive_color or "#cdd6f4"
-    active = lyrics.active_color or "#cba6f7"
+    inactive, active = "#cdd6f4", "#cba6f7"
     lyric_font = lyrics.font_family.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
     lyric_font_rule = f'font-family: "{lyric_font}";' if lyric_font else ""
     rules = f"""

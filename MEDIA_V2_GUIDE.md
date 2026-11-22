@@ -134,8 +134,6 @@ media_v2:
 | `lines_before` | integer | `-1` | Lines shown before the active line (-1–100). `-1` shows all. |
 | `lines_after` | integer | `-1` | Lines shown after the active line (-1–100). `-1` shows all. |
 | `inactive_opacity` | float | `-1.0` | Opacity of inactive lines (0.0–1.0). `-1` fades lines by distance from the active line. |
-| `active_color` | string | `null` | Color of the active line. `null` follows the popup colors. |
-| `inactive_color` | string | `null` | Color of inactive lines. `null` follows the popup colors. |
 | `font_family` | string | `""` | Lyrics font. Empty uses the popup font. |
 | `font_size` | integer | `18` | Font size in pixels (8–72). |
 | `font_weight` | integer | `700` | Font weight, 100 to 900 in steps of 100. |
@@ -145,7 +143,7 @@ media_v2:
 | `animation_duration_ms` | integer | `320` | Line and scroll animation duration in ms (0–5000). |
 | `browse_return_ms` | integer | `4000` | Time before a browsed list returns to the playing line, in ms (0–60000). |
 | `drag_threshold` | integer | `4` | Pointer movement in pixels that starts a drag (1–64). |
-| `style` | dict | [See below](#lyrics-style-options) | Separate styles for the lines before the current line, the current line and the lines after it. |
+| `style` | dict | [See below](#lyrics-style-options) | Separate styles for the lines before the current line, the current line and the lines after it. Colors are set in `styles.css`, see [Lyrics Colors](#lyrics-colors). |
 | `glow` | dict | [See below](#lyrics-glow-options) | A soft halo behind the current line. |
 | `word_highlight` | string | `"step"` | `"step"` colors whole words as they are sung. `"sweep"` fills each word smoothly from left to right. |
 | `sweep_softness` | float | `0.5` | Width of the soft edge of the sweep, in em (0–3). `0` is a hard edge. |
@@ -174,8 +172,6 @@ Timed lyrics follow playback and highlight the current line. Scrolling, dragging
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `color` | string | `null` | Text color. `null` uses `inactive_color` (`active_color` for `current`), then the popup colors. |
-| `background` | string | `null` | A rounded fill behind the text of the line, for example `"#33cba6f7"` (`#AARRGGBB`). |
 | `bold` | boolean | `null` | `true` draws at least weight 700, `false` at most 400. `null` uses `font_weight`. |
 | `italic` | boolean | `false` | Italic text. |
 | `underline` | boolean | `false` | Underlined text. |
@@ -183,7 +179,7 @@ Timed lyrics follow playback and highlight the current line. Scrolling, dragging
 | `opacity` | float | `null` | Opacity for this whole side (0.0–1.0). `null` fades lines by distance from the current line. |
 | `scale` | float | `null` | Size for this whole side (0.5–1.5). `null` uses the built-in sizes. |
 
-`style` also has `background_radius` (`6`, 0–32) and `background_padding` (`4`, 0–16), in pixels. Rows keep the same height when a line becomes current, so a bold or larger current line never moves the list.
+`style` also has `background_radius` (`6`, 0–32) and `background_padding` (`4`, 0–16), in pixels. They shape the fill set with `-qproperty-beforeBackground`, `-qproperty-currentBackground` or `-qproperty-afterBackground`. Rows keep the same height when a line becomes current, so a bold or larger current line never moves the list.
 
 ### Lyrics Glow Options
 
@@ -192,10 +188,29 @@ Timed lyrics follow playback and highlight the current line. Scrolling, dragging
 | `enabled` | boolean | `false` | Show the glow. |
 | `radius` | integer | `8` | Blur radius in pixels (0–32). |
 | `strength` | float | `0.6` | Opacity multiplier (0–2). |
-| `color` | string | `null` | Glow color. `null` uses the color of the current line. |
 | `target` | string | `"line"` | `"line"` lights the whole current line. `"sung"` lights only the part already sung, and needs a sweep. |
 
+The glow uses the color of the current line, or `-qproperty-glowColor` when it is set.
+
 Styles and the glow are computed once per line and add no work per frame. Only the sweep repaints every frame, and only the current line, while the Lyrics tab is open and media is playing. `sweep_fps` limits that cost.
+
+### Lyrics Colors
+
+Like the rest of the widget, lyric colors are set in `styles.css`, on `.media-v2-popup .media-lyrics-view`. The lyrics are painted by the widget, so the per-side colors use `-qproperty-` values, the same convention as the [adaptive bar style](docs/Styling.md#adaptive-bar-style).
+
+| Property | Default | Description |
+| --- | --- | --- |
+| `color` | `#cdd6f4` | Color of lines that are not current. |
+| `selection-background-color` | `#cba6f7` | Color of the current line and of sung words. |
+| `-qproperty-beforeColor` | `color` | Lines before the current line. |
+| `-qproperty-currentColor` | `selection-background-color` | The current line. |
+| `-qproperty-afterColor` | `color` | Lines after the current line. |
+| `-qproperty-beforeBackground` | none | A rounded fill behind lines before the current line. |
+| `-qproperty-currentBackground` | none | A rounded fill behind the current line. |
+| `-qproperty-afterBackground` | none | A rounded fill behind lines after the current line. |
+| `-qproperty-glowColor` | current line color | Color of the [glow](#lyrics-glow-options). |
+
+Colors with alpha use the CSS `#RRGGBBAA` order in `styles.css`, for example `#cba6f733`, or `rgba()`. Qt reads a `qproperty` once, when the widget is polished. Changing a value works on save, but deleting a line keeps the old value until YASB restarts.
 
 Example of a styled Lyrics tab:
 
@@ -204,13 +219,22 @@ lyrics:
   alignment: center
   font_weight: 600
   style:
-    before:  { color: "#6c7086", italic: true, bold: false, opacity: 0.55 }
-    current: { color: "#cba6f7", bold: true, background: "#33cba6f7" }
-    after:   { color: "#a6adc8", bold: false, opacity: 0.4 }
+    before:  { italic: true, bold: false, opacity: 0.55 }
+    current: { bold: true }
+    after:   { bold: false, opacity: 0.4 }
     background_radius: 8
   glow: { enabled: true, radius: 10, strength: 0.7, target: sung }
   word_highlight: sweep
   line_sweep: true
+```
+
+```css
+.media-v2-popup .media-lyrics-view {
+    color: #a6adc8;
+    selection-background-color: #cba6f7;
+    -qproperty-beforeColor: #6c7086;
+    -qproperty-currentBackground: #cba6f733;
+}
 ```
 
 ## Disc Options
@@ -588,7 +612,7 @@ The examples below are written for `use_default_styles: false`. Sizes in `styles
 
 ## Deprecated Options
 
-Older option names are still accepted and converted when the config is loaded. New configurations should use the current names.
+Older option names are still accepted and converted when the config is loaded. New configurations should use the current names. The lyric color options are not converted: they are ignored with a warning, and `yasbc migrate-config` removes them. Set the colors in `styles.css` instead.
 
 | Old option | Current option |
 | --- | --- |
@@ -603,3 +627,8 @@ Older option names are still accepted and converted when the config is loaded. N
 | `popup.background.mode: "qss"` | `popup.background.mode: "color"` |
 | `popup.equalizer.preset_effect: "blur_slide"` | `"none"` |
 | `popup.equalizer.apo.write_debounce_ms` | Ignored. Manual band changes are saved with Apply. |
+| `popup.lyrics.active_color` | `selection-background-color` on `.media-lyrics-view` in `styles.css` |
+| `popup.lyrics.inactive_color` | `color` on `.media-lyrics-view` in `styles.css` |
+| `popup.lyrics.style.<side>.color` | `-qproperty-beforeColor`, `-qproperty-currentColor` or `-qproperty-afterColor` in `styles.css` |
+| `popup.lyrics.style.<side>.background` | `-qproperty-beforeBackground`, `-qproperty-currentBackground` or `-qproperty-afterBackground` in `styles.css` |
+| `popup.lyrics.glow.color` | `-qproperty-glowColor` in `styles.css` |

@@ -492,8 +492,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         "lines_before": -1,
         "lines_after": -1,
         "inactive_opacity": -1.0,
-        "active_color": None,
-        "inactive_color": None,
         "font_family": "",
         "font_size": 18,
         "font_weight": 700,
@@ -505,8 +503,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         "drag_threshold": 4,
         "style": {
             "before": {
-                "color": None,
-                "background": None,
                 "bold": None,
                 "italic": False,
                 "underline": False,
@@ -515,8 +511,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
                 "scale": None,
             },
             "current": {
-                "color": None,
-                "background": None,
                 "bold": None,
                 "italic": False,
                 "underline": False,
@@ -525,8 +519,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
                 "scale": None,
             },
             "after": {
-                "color": None,
-                "background": None,
                 "bold": None,
                 "italic": False,
                 "underline": False,
@@ -537,7 +529,7 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
             "background_radius": 6,
             "background_padding": 4,
         },
-        "glow": {"enabled": False, "radius": 8, "strength": 0.6, "color": None, "target": "line"},
+        "glow": {"enabled": False, "radius": 8, "strength": 0.6, "target": "line"},
         "word_highlight": "step",
         "sweep_softness": 0.5,
         "sweep_fps": 30,
@@ -560,8 +552,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
                     "alignment": "center",
                     "visible_lines_before": 2,
                     "visible_lines_after": 3,
-                    "activeLineColor": "#ff00aa",
-                    "inactive_color": "#112233",
                     "provider_order": ["netease"],
                 }
             }
@@ -569,7 +559,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
     ).popup.lyrics
     assert custom.alignment == "center"
     assert (custom.lines_before, custom.lines_after) == (2, 3)
-    assert custom.active_color == "#ff00aa"
     assert custom.provider_order == ["netease"]
     private = MediaV2Config.model_validate(
         {
@@ -599,8 +588,6 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         MediaV2Config.model_validate({"popup": {"lyrics": {"provider_order": ["lyrics_ovh"]}}})
     with pytest.raises(ValidationError):
         MediaV2Config.model_validate({"popup": {"lyrics": {"provider_order": ["youtube_music"]}}})
-    with pytest.raises(ValidationError, match="valid Qt color"):
-        MediaV2Config.model_validate({"popup": {"lyrics": {"active_color": "not-a-color"}}})
     with pytest.raises(ValidationError, match="must not contain duplicates"):
         MediaV2Config.model_validate({"popup": {"lyrics": {"provider_order": ["lrclib", "lrclib"]}}})
     riced = MediaV2Config.model_validate(
@@ -608,8 +595,8 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
             "popup": {
                 "lyrics": {
                     "style": {
-                        "before": {"color": "#6c7086", "italic": True, "opacity": 0.55},
-                        "current": {"color": "#cba6f7", "bold": True, "background": "#33cba6f7", "scale": 1.1},
+                        "before": {"italic": True, "opacity": 0.55},
+                        "current": {"bold": True, "scale": 1.1},
                         "after": {"underline": True, "strikethrough": True},
                         "background_radius": 8,
                     },
@@ -622,12 +609,9 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
     ).popup.lyrics
     assert riced.style.current.bold and riced.style.before.opacity == 0.55 and riced.glow.target == "sung"
     for invalid in (
-        {"style": {"current": {"color": "not-a-color"}}},
-        {"style": {"before": {"background": "nope"}}},
         {"style": {"after": {"opacity": 1.5}}},
         {"style": {"after": {"scale": 2}}},
         {"style": {"after": {"blink": True}}},
-        {"glow": {"color": "invalid"}},
         {"glow": {"radius": 33}},
         {"sweep_fps": 61},
         {"line_sweep_max_ms": 100},
@@ -635,6 +619,30 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
     ):
         with pytest.raises(ValidationError):
             MediaV2Config.model_validate({"popup": {"lyrics": invalid}})
+
+
+def test_media_v2_lyric_colors_moved_to_css(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="deprecation"):
+        lyrics = MediaV2Config.model_validate(
+            {
+                "popup": {
+                    "lyrics": {
+                        "active_color": "#ff00aa",
+                        "inactiveLineColor": "#112233",
+                        "style": {"current": {"color": "#cba6f7", "background": "#33cba6f7", "bold": True}},
+                        "glow": {"enabled": True, "color": "#ffffff"},
+                    }
+                }
+            }
+        ).popup.lyrics
+    assert lyrics.style.current.bold and lyrics.glow.enabled
+    dumped = lyrics.model_dump()
+    assert "active_color" not in dumped and "color" not in dumped["glow"]
+    assert "color" not in dumped["style"]["current"] and "background" not in dumped["style"]["current"]
+    warned = caplog.text
+    for key in ("active_color", "inactiveLineColor", "'color'", "'background'"):
+        assert key in warned
+    assert "-qproperty-currentColor" in warned and "-qproperty-glowColor" in warned
 
 
 @pytest.mark.parametrize("position", ["left", "right", "top", "hidden"])

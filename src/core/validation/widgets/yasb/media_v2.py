@@ -132,27 +132,13 @@ class MediaLyricsMarginsConfig(CustomBaseModel):
     placeholder: int = Field(default=8, ge=0, le=64)
 
 
-def _require_colors(model: CustomBaseModel, *names: str) -> None:
-    for name in names:
-        value = getattr(model, name)
-        if value is not None and not QColor(value).isValid():
-            raise ValueError(f"popup.lyrics {name} must be a valid Qt color")
-
-
 class MediaV2LyricsLineStyleConfig(CustomBaseModel):
-    color: str | None = None
-    background: str | None = None
     bold: bool | None = None
     italic: bool = False
     underline: bool = False
     strikethrough: bool = False
     opacity: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
     scale: float | None = Field(default=None, ge=0.5, le=1.5, allow_inf_nan=False)
-
-    @model_validator(mode="after")
-    def valid_colors(self) -> Self:
-        _require_colors(self, "color", "background")
-        return self
 
 
 class MediaV2LyricsStyleConfig(CustomBaseModel):
@@ -167,13 +153,7 @@ class MediaV2LyricsGlowConfig(CustomBaseModel):
     enabled: bool = False
     radius: int = Field(default=8, ge=0, le=32)
     strength: float = Field(default=0.6, ge=0.0, le=2.0, allow_inf_nan=False)
-    color: str | None = None
     target: Literal["line", "sung"] = "line"
-
-    @model_validator(mode="after")
-    def valid_color(self) -> Self:
-        _require_colors(self, "color")
-        return self
 
 
 class MediaLyricsConfig(CustomBaseModel):
@@ -182,8 +162,6 @@ class MediaLyricsConfig(CustomBaseModel):
     lines_before: int = Field(default=-1, ge=-1, le=100)
     lines_after: int = Field(default=-1, ge=-1, le=100)
     inactive_opacity: float = Field(default=-1.0, ge=-1.0, le=1.0, allow_inf_nan=False)
-    active_color: str | None = None
-    inactive_color: str | None = None
     font_family: str = ""
     font_size: int = Field(default=18, ge=8, le=72)
     font_weight: Literal[100, 200, 300, 400, 500, 600, 700, 800, 900] = 700
@@ -229,8 +207,6 @@ class MediaLyricsConfig(CustomBaseModel):
             "linesBehind": "lines_before",
             "linesAfter": "lines_after",
             "inactiveOpacity": "inactive_opacity",
-            "activeLineColor": "active_color",
-            "inactiveLineColor": "inactive_color",
             "fontFamily": "font_family",
             "fontWeight": "font_weight",
             "lineHeight": "line_height",
@@ -247,12 +223,6 @@ class MediaLyricsConfig(CustomBaseModel):
             provider_values = cast(list[object], providers)
             if len(set(provider_values)) != len(provider_values):
                 raise ValueError("popup.lyrics.provider_order must not contain duplicates")
-        for field_name in ("active_color", "inactive_color"):
-            color = values.get(field_name)
-            if color is not None and not isinstance(color, str):
-                raise ValueError(f"popup.lyrics.{field_name} must be a valid Qt color")
-            if isinstance(color, str) and not QColor(color).isValid():
-                raise ValueError(f"popup.lyrics.{field_name} must be a valid Qt color")
         return values
 
     def active_provider_order(self) -> list[str]:

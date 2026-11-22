@@ -154,6 +154,19 @@ SCOPED_DEPRECATED_FIELDS: dict[str, dict[str, str]] = {
     "PowerPlanConfig": {
         "update_interval": "Power plan changes are now detected via Windows events. Remove 'update_interval' from your config.",
     },
+    "MediaLyricsConfig": {
+        "active_color": "Use CSS selection-background-color on .media-v2-popup .media-lyrics-view instead.",
+        "inactive_color": "Use CSS color on .media-v2-popup .media-lyrics-view instead.",
+        "activeLineColor": "Use CSS selection-background-color on .media-v2-popup .media-lyrics-view instead.",
+        "inactiveLineColor": "Use CSS color on .media-v2-popup .media-lyrics-view instead.",
+    },
+    "MediaV2LyricsLineStyleConfig": {
+        "color": "Use CSS -qproperty-beforeColor, -qproperty-currentColor or -qproperty-afterColor on .media-v2-popup .media-lyrics-view instead.",
+        "background": "Use CSS -qproperty-beforeBackground, -qproperty-currentBackground or -qproperty-afterBackground on .media-v2-popup .media-lyrics-view instead.",
+    },
+    "MediaV2LyricsGlowConfig": {
+        "color": "Use CSS -qproperty-glowColor on .media-v2-popup .media-lyrics-view instead.",
+    },
 }
 
 SCOPED_RENAMED_FIELDS: dict[str, dict[str, tuple[str, str]]] = {
