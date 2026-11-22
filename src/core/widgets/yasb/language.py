@@ -314,16 +314,6 @@ class LanguageWidget(BaseWidget):
         self._available_languages = languages
         return languages
 
-    def _get_current_language_id(self):
-        """Get the current language ID"""
-        try:
-            hwnd = user32.GetForegroundWindow()
-            thread_id = user32.GetWindowThreadProcessId(hwnd, None)
-            input_locale_id = user32.GetKeyboardLayout(thread_id)
-            return input_locale_id & 0xFFFF
-        except:
-            return 0
-
     def _get_current_layout_handle(self):
         """Get the current keyboard layout handle"""
         try:
