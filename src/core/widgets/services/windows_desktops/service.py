@@ -472,10 +472,6 @@ class WindowsDesktopService(QObject):
             return DesktopInfo(number=0, guid="", name="")
 
     @staticmethod
-    def get_desktop(number: int) -> DesktopInfo:
-        return WindowsDesktopService()._resolve(number)
-
-    @staticmethod
     def get_desktop_name(number: int) -> str:
         try:
             return WindowsDesktopService()._resolve(number).name
