@@ -611,36 +611,6 @@ class WiFiManager(QObject):
             connection_mode = "auto"
         return connection_mode == "auto"
 
-    def _is_hidden_ssid(
-        self,
-        client_handle: HANDLE,
-        interface_guid: GUID,
-        profile_name: str,
-    ) -> bool:
-        """Get the connection mode of a WiFi network where true is hidden and false is not hidden"""
-        profile_xml = self._get_wlan_profile(client_handle, interface_guid, profile_name)
-        match = re.search(r"<nonBroadcast>(.*?)</nonBroadcast>", profile_xml)
-        if match:
-            connection_mode = match.group(1)  # "true" or "false"
-        else:
-            connection_mode = False
-        return connection_mode == "true"
-
-    def _modify_connection_mode(
-        self,
-        client_handle: HANDLE,
-        interface_guid: GUID,
-        ssid: str,
-        connection_mode_auto: bool,
-    ) -> str:
-        """Get the WiFi profile XML"""
-        profile_xml = self._get_wlan_profile(client_handle, interface_guid, ssid)
-        pattern = r"<connectionMode>.*?</connectionMode>"
-        mode = "auto" if connection_mode_auto else "manual"
-        replacement = f"<connectionMode>{mode}</connectionMode>"
-        modified_xml = re.sub(pattern, replacement, profile_xml, flags=re.IGNORECASE)
-        return modified_xml
-
     def _get_wlan_profile(self, client_handle: HANDLE, interface_guid: GUID, ssid: str) -> str:
         """Get the profile XML of a WiFi network"""
         profile_str_ptr = LPWSTR()
