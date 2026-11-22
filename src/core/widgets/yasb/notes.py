@@ -597,12 +597,6 @@ class NotesWidget(BaseWidget):
             self._save_notes()
             NotesWidget.update_all()  # Update all widget instances
 
-    def _on_clear_chat(self) -> None:
-        """Clear all notes (if such action is needed)"""
-        self.notes = []
-        self._save_notes()
-        NotesWidget.update_all()
-
     def _cancel_editing(self) -> None:
         """Cancel editing mode"""
         self.editing_note = None
