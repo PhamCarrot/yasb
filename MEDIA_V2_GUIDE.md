@@ -140,12 +140,12 @@ media_v2:
 | `margins` | dict | `{horizontal: 4, vertical: 0, placeholder: 8}` | Margins in pixels (0–64) for lyric lines and for the empty or status message. |
 | `line_height` | integer | `30` | Minimum line height in pixels (0–200). |
 | `line_spacing` | integer | `6` | Spacing between lines in pixels (0–100). |
-| `animation_duration_ms` | integer | `320` | Line and scroll animation duration in ms (0–5000). |
+| `animation_duration_ms` | integer | `320` | Line and scroll animation duration in ms (0–5000). Also the time a finished swept line takes to fade to its before color. |
 | `browse_return_ms` | integer | `4000` | Time before a browsed list returns to the playing line, in ms (0–60000). |
 | `drag_threshold` | integer | `4` | Pointer movement in pixels that starts a drag (1–64). |
 | `style` | dict | [See below](#lyrics-style-options) | Separate styles for the lines before the current line, the current line and the lines after it. Colors are set in `styles.css`, see [Lyrics Colors](#lyrics-colors). |
 | `glow` | dict | [See below](#lyrics-glow-options) | A soft halo behind the current line. |
-| `word_highlight` | string | `"step"` | `"step"` colors whole words as they are sung. `"sweep"` fills each word smoothly from left to right. |
+| `word_highlight` | string | `"step"` | `"step"` colors whole words as they are sung. `"sweep"` fills each word smoothly from left to right, and the finished line then fades to its before color. |
 | `sweep_softness` | float | `0.5` | Width of the soft edge of the sweep, in em (0–3). `0` is a hard edge. |
 | `sweep_fps` | integer | `30` | Frame rate of the sweep (10–60). Lower values use less CPU. |
 | `unsung_opacity` | float | `0.4` | Opacity of the words of the current line that are not sung yet (0.0–1.0). |
@@ -165,6 +165,8 @@ Lyrics are only looked up while the popup is open on the Lyrics tab, and only wh
 With `prefer_word_timed: true`, line-timed or plain lyrics appear as soon as they are found. Media V2 then continues down `provider_order`, one request at a time, and replaces them in place only with word-timed lyrics. This can add one request per remaining provider for a track (two for NetEase, which uses an undocumented interface). Set it to `false` to stop at the first provider that has lyrics.
 
 Timed lyrics follow playback and highlight the current line. Scrolling, dragging or using the arrow keys pauses following for `browse_return_ms`, and a right click resumes it. Clicking a timed line, or selecting it and pressing Enter, seeks to it when the player allows seeking.
+
+With a sweep, a line that has been sung fades from the current color to the before color over `animation_duration_ms` instead of changing at once, and its glow fades with it. A word-timed line fades once its end time passes; a line-timed line fades when the next line starts. With `"step"`, lines still change color at once.
 
 ### Lyrics Style Options
 

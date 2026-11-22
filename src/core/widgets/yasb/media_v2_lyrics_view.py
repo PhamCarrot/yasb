@@ -423,9 +423,9 @@ class LyricsDelegate(QStyledItemDelegate):
         before, accent, after = self.state_colors()
         line = document.lines[row]
         active = row == self.view.current_line and (line.end_ms is None or position < line.end_ms)
-        if row == self.view.current_line and not active:
+        if row == self.view.current_line and not active and self.view.sung_fade(row) is None:
             return before
-        level = float(active) if tint is None else tint
+        level = self.view.sung_level(row, float(active) if tint is None else tint)
         return mix_color(mix_color(before, after, self.view.line_side(row)), accent, level)
 
     def formats(self, row: int, tint: float | None = None, look: int = -1) -> list[QTextLayout.FormatRange]:
@@ -453,6 +453,13 @@ class LyricsDelegate(QStyledItemDelegate):
         line = document.lines[row]
         position = self.view.position_ms
         before, accent, after = self.state_colors()
+        if (
+            line.words
+            and self.view.options.word_highlight == "sweep"
+            and (row != self.view.current_line or self.view.sung_fade(row) is not None)
+        ):
+            # Swept words share one colour, so finished lines fade like plain lines.
+            return [span(0, length, self._line_color(row, tint))]
         if line.words and row != self.view.current_line:
             return [span(0, length, mix_color(before, after, self.view.line_side(row)))]
         if line.words:
@@ -839,10 +846,15 @@ class LyricsView(QListView):
         else:
             self._sweep_frames.stop()
 
+    def _fading_rows(self) -> list[int]:
+        fades = ((row, self.sung_fade(row)) for row in range(max(0, self.current_line - 3), self.current_line))
+        return [row for row, fade in fades if fade is not None and fade < 1]
+
     def _sweep_tick(self) -> None:
         self._sync_sweep()
         if self._sweep_frames.isActive():
-            self._update_row(self.current_line)
+            for row in (*self._fading_rows(), self.current_line):
+                self._update_row(row)
 
     @property
     def text_alignment(self) -> Qt.AlignmentFlag:
@@ -912,6 +924,32 @@ class LyricsView(QListView):
             else self._line_far_from
         )
 
+    def sung_fade(self, row: int) -> float | None:
+        """Progress of a finished swept line towards its before colour; None while sung or unswept."""
+        document = self.document
+        if not self._sweep_enabled or document is None or not 0 <= row <= self.current_line < len(document.lines):
+            return None
+        line = document.lines[row]
+        if (self.options.word_highlight != "sweep") if line.words else not self.options.line_sweep:
+            return None
+        end = (
+            line.end_ms
+            if line.end_ms is not None or row + 1 >= len(document.lines)
+            else document.lines[row + 1].start_ms
+        )
+        position = self.sweep_position()
+        if end is None or position is None or position < end:
+            return None
+        duration = self.options.animation_duration_ms
+        return 1.0 if duration <= 0 else min(1.0, (position - end) / duration)
+
+    def sung_level(self, row: int, tint: float) -> float:
+        """Current-colour weight of a row, holding a finished swept line until its fade ends."""
+        fade = self.sung_fade(row)
+        if fade is None:
+            return tint
+        return 1 - fade if row == self.current_line else max(tint, 1 - fade)
+
     def line_appearance(self, row: int) -> tuple[float, float, float]:
         if self.document is None or not self.document.lines:
             return (1.0, 1.0, 0.0)
@@ -941,6 +979,8 @@ class LyricsView(QListView):
         if current < 0 or row > current:
             return 1.0
         if row < current:
+            return 0.0
+        if self.sung_fade(row) is not None:
             return 0.0
         # The current line keeps the side it came from; its colour is the current colour.
         start = self._line_from.get(row)
@@ -1036,6 +1076,7 @@ class LyricsView(QListView):
         rows = {self.current_line} if self.current_line >= 0 else set[int]()
         if self._line_progress < 1:
             rows.update(row for row, start in self._line_from.items() if start[2] > 0)
+        rows.update(row for row in self._fading_rows())
         extent = self.glow_extent()
         strength = self.options.glow.strength
         color = QColor(self._glow_color) if self._glow_color.isValid() else None
@@ -1045,7 +1086,7 @@ class LyricsView(QListView):
                 continue
             look = self.row_look(row)
             ink = color if color is not None else self.delegate.state_colors()[CURRENT]
-            amount = strength * look.tint * look.opacity * ink.alphaF()
+            amount = strength * self.sung_level(row, look.tint) * look.opacity * ink.alphaF()
             rect = self.visualRect(self.rows.index(row + 1))
             if amount <= 0 or not rect.adjusted(-extent, -extent, extent, extent).intersects(area):
                 continue
@@ -1128,6 +1169,7 @@ class LyricsView(QListView):
         if previous in starts:
             # The outgoing line fades from the current colour towards its new side only.
             scale, opacity, tint, _, state = starts[previous]
+            tint = self.sung_level(previous, tint)
             starts[previous] = (scale, opacity, tint, self._side_target(previous, current), state)
         self._line_motion.stop()
         self.current_line = current

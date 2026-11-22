@@ -1073,3 +1073,42 @@ def test_glow_halo_covers_the_text_plus_its_spread(qapp: QApplication) -> None:
             assert area == ink.adjusted(-15, -15, 15, 15)
     finally:
         dispose_view(view)
+
+
+def row_color(view: LyricsView, row: int) -> QColor:
+    look = view.row_look(row)
+    return view.delegate.formats(row, look.tint, look.target)[0].format.foreground().color()
+
+
+@pytest.mark.parametrize("words", [True, False])
+def test_finished_sweep_fades_to_the_before_colour(qapp: QApplication, words: bool) -> None:
+    def line(start: int, end: int, text: str) -> LyricLine:
+        return LyricLine(start, end, text, (LyricWord(start, end, text),) if words else ())
+
+    document = LyricsDocument((line(1000, 5000, "first"), line(6000, 8000, "second"), line(8000, 9000, "third")))
+    css = "color: #0000ff; qproperty-currentColor: #ff0000; qproperty-beforeColor: #00ff00;"
+    view = sweep_view(qapp, document, css=css, line_sweep=True, animation_duration_ms=400)
+    try:
+        view.set_position(4900, ("session", 1))
+        view.finish_line_motion()
+        assert row_color(view, 0).name() == "#ff0000"
+        view.set_position(5200, ("session", 1))
+        halfway = row_color(view, 0)
+        assert 100 < halfway.red() < 160 and 100 < halfway.green() < 160 and halfway.blue() == 0
+        view.set_position(5600, ("session", 1))
+        assert row_color(view, 0).name() == "#00ff00"
+        view.set_position(6000, ("session", 1))
+        assert view.current_line == 1
+        assert row_color(view, 0).name() == "#00ff00", "a faded line does not flash back"
+        view.set_position(8000, ("session", 1))
+        assert view.current_line == 2
+        assert row_color(view, 1).name() == "#ff0000", "without a gap the outgoing line fades from the sung colour"
+        view.set_position(8200, ("session", 1))
+        middle = row_color(view, 1)
+        assert 100 < middle.red() < 160 and 100 < middle.green() < 160
+        view.set_position(8400, ("session", 1))
+        assert row_color(view, 1).name() == "#00ff00"
+        view.finish_line_motion()
+        assert row_color(view, 1).name() == "#00ff00"
+    finally:
+        dispose_view(view)
