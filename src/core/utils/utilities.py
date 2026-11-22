@@ -197,7 +197,6 @@ class PopupWidget(QWidget):
         self._dark_mode = dark_mode
         self._persistent = persistent
         self._parent = parent
-        self._suspend_close = False
         self._pinnable = pinnable
         self._pinned = False
         self._drag_pos = None
@@ -462,7 +461,7 @@ class PopupWidget(QWidget):
     def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
         if not isinstance(a0, QObject) or a1 is None:
             return False
-        if self._suspend_close or self._pinned:
+        if self._pinned:
             return super().eventFilter(a0, a1)
         if a1.type() == QEvent.Type.MouseButtonPress:
             global_pos = cast(QMouseEvent, a1).globalPosition().toPoint()
@@ -496,10 +495,6 @@ class PopupWidget(QWidget):
             self.hide_animated()
             return True
         return super().eventFilter(a0, a1)
-
-    def set_auto_close_enabled(self, enabled: bool):
-        """Enable/disable auto-close behavior when clicking outside."""
-        self._suspend_close = not enabled
 
     @override
     def hideEvent(self, a0: QHideEvent | None) -> None:
