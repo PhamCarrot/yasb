@@ -1,7 +1,4 @@
-import re
-from typing import Any
-
-from pydantic import Field, RootModel
+from pydantic import Field
 
 from core.validation.widgets.base_model import (
     CallbacksConfig,
@@ -32,15 +29,6 @@ class ClockAlarmIconsConfig(CustomBaseModel):
     enabled: str = "\uf0f3"
     disabled: str = "\uf0a2"
     snooze: str = "\uf1f6"
-
-
-class ClockIcons(RootModel[dict[str, str]]):
-    root: dict[str, str] = {}
-
-    def model_post_init(self, __context: Any):
-        for key in self.root:
-            if not re.match(r"^clock_\d{2}$", key):
-                raise ValueError(f"Invalid icon key '{key}'. Must match 'clock_XX' where XX is two digits.")
 
 
 class ClockCallbacksConfig(CallbacksConfig):
