@@ -44,7 +44,7 @@ from core.widgets.yasb.media_v2_components import (
 )
 from core.widgets.yasb.media_v2_disc import DiscArt
 from core.widgets.yasb.media_v2_equalizer import EqualizerPanel
-from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
+from core.widgets.yasb.media_v2_motion import FrameClock, RevealEffect, animate, settle
 from core.widgets.yasb.media_v2_sections import MediaSections
 from core.widgets.yasb.media_v2_styles import media_section_key, media_styles
 
@@ -132,8 +132,11 @@ class MediaPopup(PopupWidget):
         identify(viewport, "media-viewport")
         viewport.setAutoFillBackground(False)
         root.addWidget(self._scroll_area)
+        self.frame_clock = FrameClock(self)
         self.border = identify(
-            MediaBorder(self.s(config.border_radius), config.scale, options=config.popup.border),
+            MediaBorder(
+                self.s(config.border_radius), config.scale, options=config.popup.border, clock=self.frame_clock
+            ),
             "media-border",
         )
         top_height = 464 if config.popup.artwork_position == "top" else 224
@@ -146,7 +149,7 @@ class MediaPopup(PopupWidget):
         border_layout = QVBoxLayout(self.border)
         border_layout.setContentsMargins(*([self.border.content_inset] * 4))
         self.surface = identify(
-            MediaSurface(config.popup.background, self.border.content_radius, self.border),
+            MediaSurface(config.popup.background, self.border.content_radius, self.border, clock=self.frame_clock),
             "media-surface",
             "media-surface",
         )
@@ -161,7 +164,7 @@ class MediaPopup(PopupWidget):
         row = QVBoxLayout(top) if config.popup.artwork_position == "top" else QHBoxLayout(top)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(self.s(16))
-        self.art = DiscArt(config.popup.disc, top)
+        self.art = DiscArt(config.popup.disc, top, clock=self.frame_clock)
         self.art.setFixedSize(self.s(224), self.s(224))
         details = identify(QFrame(top), "media-details")
         if config.popup.artwork_position == "right":
@@ -320,7 +323,13 @@ class MediaPopup(PopupWidget):
                 effect_parent=self.surface,
                 effect_radius=self.surface.radius,
             )
-            self.sections = MediaSections(self.equalizer, config.scale, config.popup.lyrics)
+            self.sections = MediaSections(
+                self.equalizer,
+                config.scale,
+                config.popup.lyrics,
+                clock=self.frame_clock,
+                audio_options=config.popup.audio,
+            )
             self.sections.lyrics.seek_requested.connect(self.seek_requested)
             if config.popup.equalizer_position == "top":
                 main.insertWidget(0, self.equalizer)
@@ -387,6 +396,7 @@ class MediaPopup(PopupWidget):
         self._state = state
         if hasattr(self, "sections"):
             self.sections.lyrics.set_state(active)
+            self.sections.audio.set_playing(bool(active and active.is_playing))
         changed = old_identity != track_identity(active)
         if changed or not (active and active.is_seekable) or old_revision != active.seek_revision:
             self.progress.cancel_interaction()

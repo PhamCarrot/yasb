@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QApplication
 from core.widgets.services.media import lyrics
 from core.widgets.services.media.lyrics import LyricsService, retry_delay
 from core.widgets.services.media.lyrics_model import MAX_BYTES
-from core.widgets.services.media.lyrics_provider import LyricsQuery
+from core.widgets.services.media.lyrics_provider import LyricsQuery, Provider
 
 
 @dataclass
@@ -354,3 +354,193 @@ def test_shared_shutdown_waits_for_reply_acknowledgement_even_if_waiter_cancels(
 )
 def test_retry_after_numeric_date_and_invalid(value: bytes, expected: float) -> None:
     assert retry_delay(value, datetime(2026, 11, 17, tzinfo=UTC)) == expected
+
+
+def word_body(text: str) -> bytes:
+    ttml = (
+        f'<tt><body><p begin="1s" end="3s"><span begin="1s" end="2s">{text}</span> '
+        '<span begin="2s" end="3s">words</span></p></body></tt>'
+    )
+    return json.dumps({"ttml": ttml}).encode()
+
+
+def upgrading_service(provider: LocalProvider, *providers: Provider) -> tuple[LyricsService, RoutingManager]:
+    manager = RoutingManager(provider)
+    service = LyricsService(manager=manager, spacing_ms=200, providers=providers, prefer_word_timed=True)
+    return service, manager
+
+
+def test_line_timed_result_is_shown_then_upgraded_in_place(
+    provider: LocalProvider, run_loop: Callable[[Awaitable[None]], None]
+) -> None:
+    async def run() -> None:
+        gate = threading.Event()
+        provider.responses.extend([Response(), Response(body=word_body("Hello"), gate=gate)])
+        service, manager = upgrading_service(provider, "lrclib", "better_lyrics")
+        query = LyricsQuery("song", "artist")
+        statuses: list[str] = []
+
+        def record(_: object) -> None:
+            statuses.append(service.state(query).status)
+
+        service.changed.connect(record)
+        try:
+            service.watch("view", query)
+            await until(lambda: service.state(query).status == "ready")
+            first = service.state(query).document
+            assert first is not None and not first.word_synced and first.source == "LRCLIB"
+            await until(lambda: len(provider.requests) == 2)
+            assert service.state(query).document is first and service._cache[query].resume is not None
+            gate.set()
+            await until(lambda: (document := service.state(query).document) is not None and document.word_synced)
+            upgraded = service.state(query).document
+            assert upgraded is not None and upgraded.source == "Better Lyrics"
+            assert upgraded.lines[0].text == "Hello words"
+            assert statuses[statuses.index("ready") :] == ["ready", "ready"]
+            assert service._cache[query].resume is None and service._cache[query].state.document is upgraded
+            await asyncio.sleep(0.3)
+            assert len(provider.requests) == 2 and manager.peak == 1
+            assert [request.url().host() for request in manager.originals] == ["lrclib.net", "api.betterlyrics.org"]
+        finally:
+            gate.set()
+            await close(service)
+
+    run_loop(run())
+
+
+@pytest.mark.parametrize("failure", ["miss", "rate-limit", "http-error", "timeout"])
+def test_failed_upgrade_keeps_the_published_result_and_detail(
+    provider: LocalProvider, run_loop: Callable[[Awaitable[None]], None], failure: str
+) -> None:
+    async def run() -> None:
+        gate = threading.Event()
+        later = {
+            "miss": Response(body=b"{}"),
+            "rate-limit": Response(status=429, headers={"Retry-After": "120"}),
+            "http-error": Response(status=500, body=b"{}"),
+            "timeout": Response(gate=gate),
+        }[failure]
+        provider.responses.extend([Response(), later])
+        service, _ = upgrading_service(provider, "lrclib", "better_lyrics")
+        service._timeout.setInterval(80)
+        query = LyricsQuery("song", "artist")
+        try:
+            service.watch("view", query)
+            await until(lambda: service.state(query).status == "ready")
+            first = service.state(query)
+            await until(lambda: len(provider.requests) == 2 and service._reply is None and service._parse_task is None)
+            await asyncio.sleep(0.25)
+            assert service.state(query) is first and first.detail == ""
+            assert service._cache[query].resume is None and not service._queue
+            assert len(provider.requests) == 2
+        finally:
+            gate.set()
+            await close(service)
+
+    run_loop(run())
+
+
+def test_interrupted_upgrade_resumes_once_on_return(
+    provider: LocalProvider, run_loop: Callable[[Awaitable[None]], None]
+) -> None:
+    async def run() -> None:
+        first_gate, second_gate = threading.Event(), threading.Event()
+        provider.responses.extend(
+            [
+                Response(),
+                Response(body=word_body("Late"), gate=first_gate),
+                Response(body=word_body("Again"), gate=second_gate),
+            ]
+        )
+        service, manager = upgrading_service(provider, "lrclib", "better_lyrics")
+        query = LyricsQuery("song", "artist")
+        try:
+            service.watch("view", query)
+            await until(lambda: len(provider.requests) == 2 and service._reply is not None)
+            published = service.state(query).document
+            service.unwatch("view")
+            await until(lambda: manager.active == 0)
+            first_gate.set()
+            assert service._cache[query].resume is not None
+            service.watch("view", query)
+            assert service.state(query).document is published
+            await until(lambda: len(provider.requests) == 3 and service._reply is not None)
+            assert service._cache[query].resume is None
+            service.unwatch("view")
+            await until(lambda: manager.active == 0)
+            second_gate.set()
+            service.watch("view", query)
+            await asyncio.sleep(0.4)
+            assert len(provider.requests) == 3 and service.state(query).document is published
+            assert service.state(query).status == "ready"
+        finally:
+            first_gate.set()
+            second_gate.set()
+            await close(service)
+
+    run_loop(run())
+
+
+def test_a_b_a_cannot_publish_a_stale_upgrade(
+    provider: LocalProvider, run_loop: Callable[[Awaitable[None]], None]
+) -> None:
+    async def run() -> None:
+        gate = threading.Event()
+        provider.responses.extend(
+            [
+                Response(),
+                Response(body=word_body("Stale"), gate=gate),
+                Response(),
+                Response(body=word_body("Other")),
+                Response(body=word_body("Fresh")),
+            ]
+        )
+        service, manager = upgrading_service(provider, "lrclib", "better_lyrics")
+        song, other = LyricsQuery("song", "artist"), LyricsQuery("other", "artist")
+        try:
+            service.watch("view", song)
+            await until(lambda: len(provider.requests) == 2 and service._reply is not None)
+            service.watch("view", other)
+            await until(lambda: (document := service.state(other).document) is not None and document.word_synced)
+            service.watch("view", song)
+            await until(lambda: (document := service.state(song).document) is not None and document.word_synced)
+            gate.set()
+            await asyncio.sleep(0.3)
+            document = service.state(song).document
+            assert document is not None and document.lines[0].text == "Fresh words"
+            assert len(provider.requests) == 5 and manager.peak == 1
+        finally:
+            gate.set()
+            await close(service)
+
+    run_loop(run())
+
+
+def test_upgrade_requests_are_bounded_by_the_provider_chain(
+    provider: LocalProvider, run_loop: Callable[[Awaitable[None]], None]
+) -> None:
+    async def run() -> None:
+        empty = Response(body=b'{"result":{"songs":[]}}')
+        provider.responses.extend(
+            [Response(), empty, empty, Response(body=json.dumps({"lrc": "[00:01]song"}).encode())]
+        )
+        service, manager = upgrading_service(provider, "lrclib", "netease", "better_lyrics")
+        query = LyricsQuery("song", "artist")
+        try:
+            service.watch("view", query)
+            await until(lambda: len(provider.requests) == 4 and service._reply is None and service._parse_task is None)
+            await asyncio.sleep(0.4)
+            state = service.state(query)
+            assert state.status == "ready" and state.document is not None and state.document.source == "LRCLIB"
+            assert len(provider.requests) == 4 and manager.peak == 1
+            assert [request.url().host() for request in manager.originals] == [
+                "lrclib.net",
+                "music.163.com",
+                "music.163.com",
+                "api.betterlyrics.org",
+            ]
+            assert service._cache[query].resume is None
+        finally:
+            await close(service)
+
+    run_loop(run())

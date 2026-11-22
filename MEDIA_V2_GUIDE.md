@@ -121,6 +121,7 @@ media_v2:
 | `lyrics` | dict | [See below](#lyrics-options) | Lyrics tab options. |
 | `disc` | dict | [See below](#disc-options) | Artwork disc options. |
 | `equalizer` | dict | [See below](#equalizer-options) | Equalizer options. |
+| `audio` | dict | [See below](#audio-options) | Audio tab options. |
 | `background` | dict | [See below](#background-options) | Popup background options. |
 | `border` | dict | [See below](#border-options) | Animated border options. |
 
@@ -144,6 +145,14 @@ media_v2:
 | `animation_duration_ms` | integer | `320` | Line and scroll animation duration in ms (0–5000). |
 | `browse_return_ms` | integer | `4000` | Time before a browsed list returns to the playing line, in ms (0–60000). |
 | `drag_threshold` | integer | `4` | Pointer movement in pixels that starts a drag (1–64). |
+| `style` | dict | [See below](#lyrics-style-options) | Separate styles for the lines before the current line, the current line and the lines after it. |
+| `glow` | dict | [See below](#lyrics-glow-options) | A soft halo behind the current line. |
+| `word_highlight` | string | `"step"` | `"step"` colors whole words as they are sung. `"sweep"` fills each word smoothly from left to right. |
+| `sweep_softness` | float | `0.5` | Width of the soft edge of the sweep, in em (0–3). `0` is a hard edge. |
+| `sweep_fps` | integer | `30` | Frame rate of the sweep (10–60). Lower values use less CPU. |
+| `unsung_opacity` | float | `0.4` | Opacity of the words of the current line that are not sung yet (0.0–1.0). |
+| `line_sweep` | boolean | `false` | Also sweep lines that have no word timing, from the start of the line to its end. |
+| `line_sweep_max_ms` | integer | `6000` | Longest duration of a line sweep in ms (500–30000), so long instrumental gaps do not crawl. |
 | `auto_lookup` | boolean | `true` | Look up lyrics when the Lyrics tab is opened. |
 | `provider_order` | list | `["lrclib", "netease", "better_lyrics"]` | Providers to try, in order: `"lrclib"`, `"netease"`, `"better_lyrics"`, `"musixmatch"`. No duplicates. |
 | `better_lyrics_enabled` | boolean | `true` | Allow lookups through Better Lyrics. |
@@ -151,10 +160,58 @@ media_v2:
 | `musixmatch_api_key` | string | `""` | API key for the Musixmatch API. |
 | `request_spacing_ms` | integer | `250` | Minimum time between provider requests in ms (200–5000). |
 | `request_timeout_ms` | integer | `10000` | Timeout for a provider request in ms (1000–60000). |
+| `prefer_word_timed` | boolean | `true` | When a provider returns lyrics without word timing, show them and keep asking the remaining providers for word-timed lyrics. |
 
 Lyrics are only looked up while the popup is open on the Lyrics tab, and only when the track has an artist. A disabled provider, or Musixmatch without a key, is skipped.
 
+With `prefer_word_timed: true`, line-timed or plain lyrics appear as soon as they are found. Media V2 then continues down `provider_order`, one request at a time, and replaces them in place only with word-timed lyrics. This can add one request per remaining provider for a track (two for NetEase, which uses an undocumented interface). Set it to `false` to stop at the first provider that has lyrics.
+
 Timed lyrics follow playback and highlight the current line. Scrolling, dragging or using the arrow keys pauses following for `browse_return_ms`, and a right click resumes it. Clicking a timed line, or selecting it and pressing Enter, seeks to it when the player allows seeking.
+
+### Lyrics Style Options
+
+`before`, `current` and `after` take the same options. Every option left at its default keeps the built-in look.
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `color` | string | `null` | Text color. `null` uses `inactive_color` (`active_color` for `current`), then the popup colors. |
+| `background` | string | `null` | A rounded fill behind the text of the line, for example `"#33cba6f7"` (`#AARRGGBB`). |
+| `bold` | boolean | `null` | `true` draws at least weight 700, `false` at most 400. `null` uses `font_weight`. |
+| `italic` | boolean | `false` | Italic text. |
+| `underline` | boolean | `false` | Underlined text. |
+| `strikethrough` | boolean | `false` | Struck-through text. |
+| `opacity` | float | `null` | Opacity for this whole side (0.0–1.0). `null` fades lines by distance from the current line. |
+| `scale` | float | `null` | Size for this whole side (0.5–1.5). `null` uses the built-in sizes. |
+
+`style` also has `background_radius` (`6`, 0–32) and `background_padding` (`4`, 0–16), in pixels. Rows keep the same height when a line becomes current, so a bold or larger current line never moves the list.
+
+### Lyrics Glow Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `false` | Show the glow. |
+| `radius` | integer | `8` | Blur radius in pixels (0–32). |
+| `strength` | float | `0.6` | Opacity multiplier (0–2). |
+| `color` | string | `null` | Glow color. `null` uses the color of the current line. |
+| `target` | string | `"line"` | `"line"` lights the whole current line. `"sung"` lights only the part already sung, and needs a sweep. |
+
+Styles and the glow are computed once per line and add no work per frame. Only the sweep repaints every frame, and only the current line, while the Lyrics tab is open and media is playing. `sweep_fps` limits that cost.
+
+Example of a styled Lyrics tab:
+
+```yaml
+lyrics:
+  alignment: center
+  font_weight: 600
+  style:
+    before:  { color: "#6c7086", italic: true, bold: false, opacity: 0.55 }
+    current: { color: "#cba6f7", bold: true, background: "#33cba6f7" }
+    after:   { color: "#a6adc8", bold: false, opacity: 0.4 }
+    background_radius: 8
+  glow: { enabled: true, radius: 10, strength: 0.7, target: sung }
+  word_highlight: sweep
+  line_sweep: true
+```
 
 ## Disc Options
 
@@ -176,12 +233,24 @@ The visualizer, rhythm and glow use the same audio capture as the [Audio Visuali
 | --- | --- | --- | --- |
 | `preset` | string | `"Flat"` | Initial preset: `"Flat"`, `"Bass"`, `"Treble"`, `"Vocal"`, `"Pop"`, `"Rock"`, `"Jazz"`, `"Classic"` or `"Custom"`. |
 | `custom_bands` | list | `[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]` | Gain in dB (-12–12) for the `Custom` preset. Exactly 10 values, for 31 Hz, 63 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz and 16 kHz. |
-| `preset_effect` | string | `"lightning"` | Animation played when a preset is selected: `"lightning"`, `"ripple"`, `"center_pulse"` or `"none"`. |
-| `effect_speed` | float | `1.0` | Duration multiplier for the preset animation (0.4–3.0). Lower is faster. |
+| `preset_effect` | string | `"lightning"` | Animation played when a preset is selected: `"lightning"`, `"ripple"`, `"center_pulse"`, `"curve"`, `"glow"`, `"scan"`, `"random"` or `"none"`. `"random"` picks one of the others for each switch. |
+| `effect_speed` | float | `1.0` | Duration multiplier for the preset animation and the handle movement (0.4–3.0). Lower is faster. |
+| `preset_motion` | dict | [See below](#preset-motion-options) | How the band handles move to a new preset. |
 | `backend` | string | `"visual"` | `"visual"` only moves the sliders. `"equalizer_apo"` changes the sound through Equalizer APO. |
 | `apo` | dict | [See below](#equalizer-apo-options) | Equalizer APO options. |
 
 Preset buttons apply immediately. Dragging a band switches to `Custom` and shows an **Apply** button. The change is saved when you click it, and discarded if you close the popup or leave the Equalizer tab.
+
+### Preset Motion Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `style` | string | `"together"` | `"together"`, `"cascade"` (left to right), `"center_out"`, `"edges_in"`, `"wave"` (cascade with a small overshoot) or `"spring"` (together with an overshoot). |
+| `duration_ms` | integer | `350` | Travel time of each band in ms (80–2000). |
+| `stagger_ms` | integer | `0` | Delay between neighbouring bands in ms (0–200). `duration_ms` plus nine times `stagger_ms` must not exceed 3000. |
+| `easing` | string | `"out_quart"` | Travel curve: `"out_quart"`, `"out_cubic"`, `"out_back"` or `"in_out_sine"`. `wave` and `spring` use their own curve. |
+
+The motion is only presentation. The selected curve is applied immediately, and selecting another preset during the movement continues from where the handles are.
 
 ## Equalizer APO Options
 
@@ -218,6 +287,15 @@ Include: yasb-media-v2-eq.txt
 > **Saved** means the file was written, not that Equalizer APO is active on the device. If a preset sounds unchanged, open the Equalizer APO Device Selector, select the playback device shown in the popup and restart when asked. Other Equalizer APO filters, including Peace, stay active and stack with the Media V2 curve.
 
 The Audio tab (balance, mono, channel swap and dynamic range) and the **Dynamic** equalizer only work with `processor: "native"`. See [Media V2 Native Audio Processor](https://github.com/PhamCarrot/yasb/blob/main/docs/MEDIA_V2_NATIVE_AUDIO.md).
+
+## Audio Options
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `motion` | string | `"reference"` | `"enhanced"` animates balance changes from Reset or another popup, fades changed texts, stretches the switch knob while it moves and adds hover and press feedback to the cards. |
+| `meters` | boolean | `false` | Show live left and right levels on the balance scale while the Audio tab is open and media is playing. |
+
+The meters use the same audio capture as the disc and show the playing audio with balance, mono and swap applied by the popup.
 
 ## Background Options
 
@@ -349,6 +427,8 @@ Media V2 has no `label` or `label_alt` option, and placeholders such as `{title}
 - Transport buttons get their shape as a class: `.square`, `.rounded` or `.circle`.
 - A single preset or band can be styled with `.preset.flat`, `.preset.bass` and so on, and `.eq-band.band-31` to `.eq-band.band-16k`.
 - `:hover`, `:pressed` and `:disabled` work on buttons and other controls.
+- The off color of the Audio switches can be set with `qproperty-offColor`, for example `.media-v2-popup .media-audio QCheckBox { qproperty-offColor: #313244; }`. The Dynamic switch in the header is `#media-audio-adaptive`.
+- With `audio.motion: "enhanced"`, the cards can be styled with `.media-v2-popup .media-audio[audioMotion="enhanced"] .audio-card:hover` and `.audio-card[pressed="true"]`.
 
 > [!NOTE]
 > The disc, the animated border, the artwork background and the preset effects are painted by the widget. They are controlled by the `disc`, `border`, `background` and `equalizer` options, not by CSS. The bar has no height option, use vertical padding on `.media-v2-bar` instead.

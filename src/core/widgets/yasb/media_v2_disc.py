@@ -6,13 +6,14 @@ import math
 import time
 from collections.abc import Sequence
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QHideEvent, QPainter, QPaintEvent, QPen, QPixmap, QRadialGradient, QShowEvent
 from PyQt6.QtWidgets import QWidget
 
 from core.validation.widgets.yasb.media_v2 import MediaDiscConfig
 from core.widgets.services.audio_visualizer.spectrum import FFT_SIZE, SpectrumAnalyzer
 from core.widgets.yasb.media_v2_components import AlbumArt
+from core.widgets.yasb.media_v2_motion import FrameClock
 
 
 def rhythm_targets(bass: float, kick: float, strength: float = 1.0, size: float = 224.0):
@@ -73,13 +74,18 @@ class _CaptureLease:
             self.attached = False
 
 
+CaptureLease = _CaptureLease
+
+
 class DiscArt(AlbumArt):
     PAUSE_DECAY_SECONDS = 1.5
     MAX_BAR_HEIGHT_LOGICAL = 10.0
     MAX_BOUNCE_LOGICAL = 2.0
     EDGE_INSET_LOGICAL = 0.75
 
-    def __init__(self, options: MediaDiscConfig, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, options: MediaDiscConfig, parent: QWidget | None = None, *, clock: FrameClock | None = None
+    ) -> None:
         super().__init__(parent, vinyl=True)
         self.options = options
         self._levels = [0.0] * 60
@@ -103,10 +109,7 @@ class DiscArt(AlbumArt):
         self._lease = _CaptureLease(options.framerate)
         lease = self._lease
         self.destroyed.connect(lambda *_: lease.detach())
-        self._clock = QTimer(self)
-        self._clock.setTimerType(Qt.TimerType.PreciseTimer)
-        self._clock.setInterval(1000 // options.framerate)
-        self._clock.timeout.connect(self._tick)
+        self._clock = (clock or FrameClock(self)).subscription(self._tick, options.framerate)
 
     def set_artwork(self, pixmap: QPixmap, playing: bool = False, *, clear_previous: bool = False):
         was_playing = self._playing

@@ -864,3 +864,95 @@ def test_audio_switches_and_segmented_selection_animate_without_mouse_focus(
                 assert image.pixelColor(outer, 0) != ink
     finally:
         dispose(parent, popup)
+
+
+def audio_panel(qapp: QApplication, **options: object) -> tuple[QWidget, MediaAudioPanel, AudioController]:
+    from core.validation.widgets.yasb.media_v2 import MediaV2AudioConfig
+
+    parent = QWidget()
+    controller = AudioController()
+    panel = MediaAudioPanel(
+        cast(EqualizerApoController, controller), 1, parent, MediaV2AudioConfig.model_validate(options)
+    )
+    panel.resize(600, 230)
+    parent.show()
+    panel.show()
+    qapp.processEvents()
+    return parent, panel, controller
+
+
+def test_reference_audio_motion_is_unchanged_and_off_track_colour_is_themable(qapp: QApplication) -> None:
+    parent, panel, controller = audio_panel(qapp)
+    try:
+        assert panel.property("audioMotion") is None and not panel._fades and panel._lease is None
+        controller.audio_state = replace(controller.audio_state, balance=-0.5)
+        panel.sync()
+        assert panel.balance.value() == -50 and panel.left_value.text() == "L  100%"
+        assert not getattr(panel.balance, "_motion", {})
+        assert panel.mono.offColor == QColor("#45475a")
+        panel.mono.setStyleSheet("QCheckBox { qproperty-offColor: #ff0000; }")
+        panel.mono.ensurePolished()
+        assert panel.mono.offColor == QColor("#ff0000")
+        assert controller.calls == []
+    finally:
+        sip.delete(parent)
+
+
+def test_enhanced_balance_animates_without_writes_and_reset_writes_once(qapp: QApplication) -> None:
+    parent, panel, controller = audio_panel(qapp, motion="enhanced")
+    try:
+        assert panel.property("audioMotion") == "enhanced"
+        controller.audio_state = replace(controller.audio_state, balance=-0.6)
+        panel.sync()
+        motion = cast(dict[str, QPropertyAnimation], getattr(panel.balance, "_motion"))["presented"]
+        assert motion.state() == QPropertyAnimation.State.Running and motion.duration() == 220
+        motion.setCurrentTime(110)
+        assert -60 < panel.balance.value() < 20 and controller.calls == []
+        assert panel.left_value.text() != "L  100%" or panel.right_value.text() != "40%  R"
+        panel.reset()
+        assert controller.calls == [{"balance": 0.0, "mono": False, "swap": False, "dynamics": 0}]
+        motion.setCurrentTime(motion.duration())
+        assert panel.balance.value() == 0 and len(controller.calls) == 1
+        controller.audio_state = replace(controller.audio_state, balance=0.8)
+        panel.sync()
+        motion.setCurrentTime(60)
+        parent.hide()
+        assert panel.balance.value() == 80 and not panel._poll.isActive()
+        assert motion.state() != QPropertyAnimation.State.Running and len(controller.calls) == 1
+    finally:
+        sip.delete(parent)
+
+
+def test_meters_lease_only_while_active_playing_and_visible(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.widgets.test_media_v2 import install_capture
+
+    capture = install_capture(monkeypatch)
+    parent, panel, controller = audio_panel(qapp, meters=True)
+    try:
+        panel.set_playing(True)
+        assert not capture.readers and not panel._meter_frames.isActive()
+        panel.set_active(True)
+        assert capture.readers == [(30, frozenset({"left", "right"}))] and panel._meter_frames.isActive()
+        capture.is_active = True
+
+        def magnitudes(channel: str) -> list[float]:
+            return [0.25 if channel == "left" else 0.0] * 1025
+
+        monkeypatch.setattr(capture, "magnitudes", magnitudes)
+        controller.audio_state = replace(controller.audio_state, balance=0.0, swap=True)
+        panel._meter_tick()
+        assert panel.balance_scale.levels[0] == 0 and panel.balance_scale.levels[1] > 0.5
+        controller.audio_state = replace(controller.audio_state, mono=True)
+        panel._levels = [0.0, 0.0]
+        panel._meter_tick()
+        assert panel.balance_scale.levels[0] == panel.balance_scale.levels[1] > 0
+        panel.set_playing(False)
+        assert not capture.readers and not panel._meter_frames.isActive() and panel.balance_scale.levels == (0, 0)
+        panel.set_playing(True)
+        parent.hide()
+        assert not capture.readers and not panel._meter_frames.isActive()
+        assert controller.calls == []
+    finally:
+        sip.delete(parent)

@@ -1,11 +1,12 @@
 # pyright: reportPrivateUsage=false
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, cast
 
 import PyQt6.sip as sip
 import pytest
-from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, QRectF, Qt
+from PyQt6.QtCore import QAbstractAnimation, QPoint, QPropertyAnimation, QRect, QRectF, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFrame, QWidget
@@ -415,7 +416,7 @@ def test_visual_preset_buttons_move_handles_and_reverse_from_the_current_positio
         slider = panel.bands.sliders[0]
         qt_test = cast(Any, QTest)
         qt_test.mouseClick(panel.buttons["Bass"], Qt.MouseButton.LeftButton)
-        motion = cast(dict[str, QPropertyAnimation], getattr(slider, "_motion"))["gain"]
+        motion = panel.bands.travel
         assert slider.gain == 0 and panel.apo.editing_gains[0] == 5
         motion.setCurrentTime(65)
         first = slider.gain
@@ -433,7 +434,7 @@ def test_visual_preset_buttons_move_handles_and_reverse_from_the_current_positio
 
         panel.apo.committed_changed.connect(supersede)
         panel.buttons["Bass"].click()
-        assert panel.preset == "Flat" and motion.endValue() == 0 and slider.gain == -2
+        assert panel.preset == "Flat" and motion.targets[0] == 0 and slider.gain == -2
         motion.setCurrentTime(65)
         assert -2 < slider.gain < 0 and not panel.apo.has_draft
     finally:
@@ -640,3 +641,212 @@ def test_header_morph_and_adaptive_overlay_stay_page_scoped(
         popup.hide()
         popup.equalizer.apo.shutdown()
         sip.delete(parent)
+
+
+def test_popup_frame_clock_merges_drivers_and_idles_when_paused_or_closed(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PyQt6.QtCore import QAbstractAnimation, QTimer
+
+    from core.widgets.yasb.media_v2_motion import FrameClock
+
+    parent, popup = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    other_parent, other = make_popup(monkeypatch, QRect(0, 0, 1920, 1040), scale=1)
+    capture = install_capture(monkeypatch)
+    playing = MediaSessionState(Player("one", "one.app", "One"), playback=Playback(PlaybackState.PLAYING))
+    try:
+        popup.set_state(MediaState((playing,), "one"), QPixmap())
+        popup.open_at_parent()
+        qapp.processEvents()
+        clock = popup.frame_clock
+        assert isinstance(clock, FrameClock) and clock is not other.frame_clock
+        assert popup.border._timer.isActive() and popup.art._clock.isActive()
+        assert getattr(popup.border._timer, "clock") is clock and popup.art._clock.clock is clock
+        assert popup.surface._orbit_timer.clock is clock
+        assert clock.subscribers == 2 and clock.state() == QAbstractAnimation.State.Running
+        assert other.frame_clock.subscribers == 0 and other.frame_clock.state() != QAbstractAnimation.State.Running
+        assert capture.readers
+        popup.set_state(MediaState((replace(playing, playback=Playback(PlaybackState.PAUSED)),), "one"), QPixmap())
+        assert popup.art._clock.isActive(), "the paused disc decays before it leaves the clock"
+        popup.art._decay_started -= popup.art.PAUSE_DECAY_SECONDS + 0.1
+        popup.art._tick()
+        assert not popup.art._clock.isActive() and clock.subscribers == 1 and not capture.readers
+        popup.hide()
+        qapp.processEvents()
+        assert clock.subscribers == 0 and clock.state() != QAbstractAnimation.State.Running
+        assert not [timer for timer in popup.findChildren(QTimer) if timer.isActive()]
+        assert not capture.readers
+    finally:
+        popup.hide()
+        popup.equalizer.apo.shutdown()
+        other.equalizer.apo.shutdown()
+        sip.delete(parent)
+        sip.delete(other_parent)
+
+
+def test_frame_clock_runs_only_while_subscribed_and_honours_lower_rates(qapp: QApplication) -> None:
+    from PyQt6.QtCore import QAbstractAnimation, QObject
+
+    from core.widgets.yasb.media_v2_motion import FrameClock
+
+    owner = QObject()
+    clock = FrameClock(owner)
+    calls: list[str] = []
+    fast = clock.subscription(lambda: calls.append("fast"), 60)
+    slow = clock.subscription(lambda: calls.append("slow"), 12)
+    try:
+        fast.start()
+        slow.start()
+        fast.start()
+        assert clock.subscribers == 2 and clock.state() == QAbstractAnimation.State.Running
+        cast(Any, QTest).qWait(400)
+        assert calls.count("fast") >= 2 * calls.count("slow") > 0
+        fast.stop()
+        assert clock.state() == QAbstractAnimation.State.Running and not fast.isActive()
+        slow.stop()
+        slow.stop()
+        assert clock.subscribers == 0 and clock.state() == QAbstractAnimation.State.Stopped
+    finally:
+        sip.delete(owner)
+
+
+def preset_panel(qapp: QApplication, **equalizer: object) -> tuple[QWidget, Any]:
+    from core.validation.widgets.yasb.media_v2 import MediaEqualizerConfig
+    from core.widgets.yasb.media_v2_equalizer import EqualizerPanel
+
+    host = QWidget()
+    host.resize(600, 320)
+    panel = EqualizerPanel(MediaEqualizerConfig.model_validate(equalizer), 1, host)
+    panel.setGeometry(host.rect())
+    host.show()
+    qapp.processEvents()
+    return host, panel
+
+
+STYLE_CHECKS: dict[str, Callable[[list[float]], bool]] = {
+    "cascade": lambda done: done[0] > done[1] > done[2] > 0 == done[9],
+    "center_out": lambda done: done[4] == done[5] > done[3] > done[2] > 0 == done[0],
+    "edges_in": lambda done: done[0] == done[9] > done[1] and done[4] == 0,
+    "wave": lambda done: done[0] > done[1] > done[2] > 0 == done[9],
+    "spring": lambda done: len({round(value, 6) for value in done}) == 1 and done[0] > 0,
+}
+
+
+@pytest.mark.parametrize("style", list(STYLE_CHECKS))
+def test_preset_motion_styles_move_bands_with_distinct_progress(qapp: QApplication, style: str) -> None:
+    check = STYLE_CHECKS[style]
+    host, panel = preset_panel(qapp, preset_motion={"style": style, "duration_ms": 300, "stagger_ms": 60})
+    try:
+        panel.select_preset("Rock")
+        travel = panel.bands.travel
+        travel.setCurrentTime(150)
+        done = [slider.gain / target for slider, target in zip(panel.bands.sliders, panel.apo.editing_gains)]
+        assert check(done), (style, [round(value, 3) for value in done])
+        travel.setCurrentTime(travel.duration())
+        assert [slider.gain for slider in panel.bands.sliders] == [float(gain) for gain in panel.apo.editing_gains]
+    finally:
+        panel.apo.shutdown()
+        sip.delete(host)
+
+
+def test_overshooting_styles_exceed_then_settle_on_the_target(qapp: QApplication) -> None:
+    host, panel = preset_panel(qapp, preset_motion={"style": "spring", "duration_ms": 600})
+    try:
+        panel.select_preset("Bass")
+        travel, slider = panel.bands.travel, panel.bands.sliders[1]
+        peak = 0.0
+        for time in range(0, 601, 20):
+            travel.setCurrentTime(time)
+            peak = max(peak, slider.gain)
+        assert peak > 7 and slider.gain == 7
+    finally:
+        panel.apo.shutdown()
+        sip.delete(host)
+
+
+def test_staggered_travel_reverses_ignores_echoes_and_releases_a_grabbed_band(qapp: QApplication) -> None:
+    host, panel = preset_panel(qapp, preset_motion={"style": "cascade", "duration_ms": 300, "stagger_ms": 40})
+    try:
+        sliders, travel = panel.bands.sliders, panel.bands.travel
+        panel.select_preset("Bass")
+        travel.setCurrentTime(120)
+        first = [slider.gain for slider in sliders]
+        assert 0 < first[0] < 5
+        panel.select_preset("Treble")
+        assert [slider.gain for slider in sliders] == pytest.approx(first), "reversal starts from the presented gains"
+        travel.setCurrentTime(100)
+        assert -2 < sliders[0].gain < first[0]
+        time = travel.currentTime()
+        panel._present_gains(panel.apo.editing_gains)
+        assert travel.currentTime() == time and travel.state() == QAbstractAnimation.State.Running
+        panel._interrupt(sliders[3])
+        held = sliders[3].gain
+        travel.setCurrentTime(travel.duration())
+        assert sliders[3].gain == held and sliders[0].gain == -2 and sliders[9].gain == 6
+    finally:
+        panel.apo.shutdown()
+        sip.delete(host)
+
+
+@pytest.mark.parametrize("effect", ["curve", "glow", "scan", "lightning", "ripple", "center_pulse"])
+def test_preset_effects_paint_early_and_middle_frames_and_stop_when_settled(qapp: QApplication, effect: str) -> None:
+    host, panel = preset_panel(qapp, preset_effect=effect)
+    try:
+        baseline = host.grab().toImage()
+        panel.select_preset("Rock")
+        bands = panel.bands
+        animation = cast(dict[str, QPropertyAnimation], getattr(bands, "_motion"))["lightningPhase"]
+        frames: list[QImage] = []
+        for fraction in (0.1, 0.5):
+            animation.setCurrentTime(round(animation.duration() * fraction))
+            bands.travel.setCurrentTime(bands.travel.duration())
+            frames.append(host.grab().toImage())
+        animation.setCurrentTime(animation.duration())
+        assert bands.phase == 1600 and animation.state() != QPropertyAnimation.State.Running
+        settled = host.grab().toImage()
+        assert frames[0] != settled or frames[1] != settled, effect
+        assert not any(
+            motion.state() == QAbstractAnimation.State.Running
+            for motion in host.findChildren(QAbstractAnimation)
+            if motion is not bands.travel
+        )
+        assert baseline is not None
+    finally:
+        panel.apo.shutdown()
+        sip.delete(host)
+
+
+def test_random_effect_uses_the_injected_generator_and_none_paints_nothing(qapp: QApplication) -> None:
+    import random
+
+    host, panel = preset_panel(qapp, preset_effect="random")
+    try:
+        panel.bands.random = random.Random(7)
+        expected = random.Random(7).choice(sorted(["lightning", "ripple", "center_pulse", "curve", "glow", "scan"]))
+        panel.select_preset("Bass")
+        assert panel.bands.effect_mode == expected
+    finally:
+        panel.apo.shutdown()
+        sip.delete(host)
+    host, panel = preset_panel(qapp, preset_effect="none")
+    try:
+        panel.select_preset("Bass")
+        assert panel.bands.phase == 1600
+    finally:
+        panel.apo.shutdown()
+        sip.delete(host)
+
+
+def test_preset_motion_total_travel_is_bounded() -> None:
+    from pydantic import ValidationError
+
+    from core.validation.widgets.yasb.media_v2 import MediaV2Config
+
+    config = MediaV2Config.model_validate(
+        {"popup": {"equalizer": {"preset_motion": {"duration_ms": 1200, "stagger_ms": 200}}}}
+    )
+    assert config.popup.equalizer.preset_motion.stagger_ms == 200
+    with pytest.raises(ValidationError, match="must not exceed 3000"):
+        MediaV2Config.model_validate(
+            {"popup": {"equalizer": {"preset_motion": {"duration_ms": 1300, "stagger_ms": 200}}}}
+        )

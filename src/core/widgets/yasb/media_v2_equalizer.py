@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+import random
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import PyQt6.QtCore as QtCore
-from PyQt6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPointF, QRect, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QHideEvent,
@@ -18,6 +20,7 @@ from PyQt6.QtGui import (
     QPaintEvent,
     QPalette,
     QPen,
+    QRadialGradient,
     QResizeEvent,
     QShowEvent,
 )
@@ -33,7 +36,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.validation.widgets.yasb.media_v2 import MediaEqualizerConfig
+from core.validation.widgets.yasb.media_v2 import MediaEqualizerConfig, MediaV2EqualizerPresetMotionConfig
 from core.widgets.services.media.equalizer_apo import EqualizerApoController
 from core.widgets.yasb.media_v2_components import CancellableSlider, MediaButton, MediaText, identify
 from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
@@ -49,12 +52,6 @@ PRESETS = {
     "Rock": (5, 4, 2, -1, -2, -1, 2, 4, 5, 6),
     "Jazz": (3, 3, 1, 1, 1, 1, 2, 1, 2, 3),
     "Classic": (0, 1, 2, 2, 2, 2, 1, 2, 3, 4),
-}
-
-PRESET_EFFECT_DURATIONS = {
-    "lightning": 1600,
-    "ripple": 700,
-    "center_pulse": 650,
 }
 
 
@@ -120,6 +117,7 @@ class GainSlider(CancellableSlider):
         self._effect_index = 0
         self.effect_mode = "none"
         self._effect_accent = QColor("#cba6f7")
+        self.travel_share = 0.0
         self.setRange(-12 * self.SCALE, 12 * self.SCALE)
         self.setSingleStep(self.SCALE)
         self.setPageStep(self.SCALE)
@@ -181,6 +179,14 @@ class GainSlider(CancellableSlider):
         raw = super().value() if value is None else value
         return raw / self.SCALE
 
+    @property
+    def effect_index(self) -> int:
+        return self._effect_index
+
+    @property
+    def effect_accent(self) -> QColor:
+        return QColor(self._effect_accent)
+
     def set_effect(self, phase: float, index: int, accent: QColor, mode: str | None = None):
         self._effect_phase = phase
         self._effect_index = index
@@ -210,62 +216,14 @@ class GainSlider(CancellableSlider):
         if ev is None:
             return None
         super().paintEvent(ev)
-        if self._effect_phase >= 1600:
+        effect = PRESET_EFFECTS.get(self.effect_mode)
+        if self._effect_phase >= 1600 or effect is None or effect.band is None:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        effect.band(self, painter, self._effect_phase / 1600)
 
-        if self.effect_mode in ("ripple", "center_pulse"):
-            self._paint_preset_highlight(painter)
-            return
-        if self.effect_mode != "lightning":
-            return
-
-        _, track, _, flash, fade = band_effect_state(self._effect_phase, self._effect_index)
-        visibility = 1.0 - fade
-        if visibility <= 0 or max(track, flash) <= 0:
-            return
-
-        scale = max(0.5, self.width() / 32)
-        accent = QColor(self._effect_accent)
-
-        fill, fill_path = self.effect_fill_path()
-        if fill.height() > 0 and flash > 0:
-            overlay = QLinearGradient(fill.topLeft(), fill.bottomLeft())
-            top = QColor(accent).lighter(130)
-            top.setAlphaF(min(1.0, flash * visibility * 0.8))
-            mid = QColor(accent)
-            mid.setAlphaF(min(1.0, flash * visibility * 0.55))
-            clear = QColor(accent)
-            clear.setAlpha(0)
-            overlay.setColorAt(0.0, top)
-            overlay.setColorAt(0.5, mid)
-            overlay.setColorAt(1.0, clear)
-            painter.fillPath(fill_path, overlay)
-
-        if fill.height() > 0 and 0.0 < track < 1.0:
-            stripe_height = 70 * scale
-            y = fill.top() + track * (fill.height() + stripe_height) - stripe_height
-            stripe = QRectF(fill.left(), y, fill.width(), stripe_height)
-            gradient = QLinearGradient(stripe.topLeft(), stripe.bottomLeft())
-            clear = QColor(accent)
-            clear.setAlpha(0)
-            pulse = max(0.0, math.sin(track * math.pi)) * visibility
-            bright = QColor("white")
-            bright.setAlphaF(min(1.0, pulse))
-            side = QColor(accent)
-            side.setAlphaF(min(1.0, pulse * 0.9))
-            gradient.setColorAt(0.0, clear)
-            gradient.setColorAt(0.2, side)
-            gradient.setColorAt(0.5, bright)
-            gradient.setColorAt(0.8, side)
-            gradient.setColorAt(1.0, clear)
-            painter.save()
-            painter.setClipPath(fill_path)
-            painter.fillRect(stripe, gradient)
-            painter.restore()
-
-    def _paint_preset_highlight(self, painter: QPainter):
+    def paint_preset_highlight(self, painter: QPainter):
         progress, opacity, overshoot = preset_band_state(self.effect_mode, self._effect_phase, self._effect_index)
         if opacity <= 0:
             return
@@ -328,14 +286,14 @@ class EqualizerEffectOverlay(QFrame):
         settle(self)
         super().hideEvent(a0)
 
-    def _map_slider_point(self, slider: GainSlider, point: QPoint):
+    def map_slider_point(self, slider: GainSlider, point: QPoint):
         """Map a slider-local point onto this sibling overlay safely."""
         return QPointF(self.mapFromGlobal(slider.mapToGlobal(point)))
 
-    def _points(self) -> list[QPointF]:
+    def points(self) -> list[QPointF]:
         points: list[QPointF] = []
         for slider in self.bands.sliders:
-            point = self._map_slider_point(slider, QPoint(slider.width() // 2, 0))
+            point = self.map_slider_point(slider, QPoint(slider.width() // 2, 0))
             y = (
                 point.y()
                 + 8 * self.bands.scale
@@ -344,102 +302,354 @@ class EqualizerEffectOverlay(QFrame):
             points.append(QPointF(point.x(), y))
         return points
 
-    def paintEvent(self, a0: QPaintEvent | None):
-        if a0 is None:
-            return None
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if self.bands.effect_mode != "lightning":
-            return
-        progress, fade = lightning_state(self.bands.phase)
-        if progress <= 0 or fade >= 1 or len(self.bands.sliders) < 2:
-            return
-        points = self._points()
-        visibility = 1.0 - fade
-        accent = QColor(self.bands.accentColor)
-        scale = self.bands.scale
+    def clip_to_surface(self, painter: QPainter) -> None:
         parent = self.parentWidget()
         if parent is not None and self.clip_radius > 0:
             clip = QPainterPath()
             clip.addRoundedRect(QRectF(parent.rect().translated(-self.pos())), self.clip_radius, self.clip_radius)
             painter.setClipPath(clip)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
 
-        # Soft ring bloom plus a crisp inner edge. Painting several cheap alpha
-        # passes gives a much closer energy falloff to the QML MultiEffect source
-        # without running a Gaussian blur over the popup every frame.
-        for index, slider in enumerate(self.bands.sliders):
-            point = self._map_slider_point(slider, QPoint(slider.width() // 2, 0))
-            _, _, ring, _, _ = band_effect_state(self.bands.phase, index)
-            if ring <= 0:
-                continue
-            base = QRectF(
-                0,
-                0,
-                (29 + ring * 34) * scale,
-                slider.height() + (17 + ring * 51) * scale,
-            )
-            base.moveCenter(QPointF(point.x(), point.y() + slider.height() / 2))
-            for extra, width, alpha in ((10, 10, 0.07), (5, 6, 0.13), (0, 2.1, 0.55)):
-                rect = base.adjusted(-extra * scale, -extra * scale, extra * scale, extra * scale)
-                color = QColor(accent).lighter(118 if extra == 0 else 105)
-                color.setAlphaF(min(1.0, ring * visibility * alpha))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.setPen(QPen(color, width * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                painter.drawRoundedRect(rect, rect.width() / 2, min(rect.width(), rect.height()) / 2)
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
+        effect = PRESET_EFFECTS.get(self.bands.effect_mode)
+        if effect is None or effect.overlay is None or self.bands.phase >= 1600:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        effect.overlay(self, painter, self.bands.phase / 1600)
 
-        seconds = self.bands.phase / 1000
-        paths: list[QPainterPath] = []
-        for layer in range(4):
-            path = QPainterPath(points[0])
-            for i in range(9):
-                if i > progress:
-                    break
-                fraction = min(1.0, progress - i)
-                steps = 6 if layer == 3 else 8
-                for j in range(1, steps + 1):
-                    t = min(j / steps, fraction)
-                    point = points[i] + (points[i + 1] - points[i]) * t
-                    envelope = math.sin(t * math.pi)
-                    noise_x = 1 if layer == 3 else (4 - layer) * 4
-                    noise_y = 1 if layer == 3 else (4 - layer) * 5
-                    sep_x = math.sin(seconds * 3 + i + j + layer) * 9 * scale * envelope if layer < 2 else 0
-                    sep_y = math.cos(seconds * 2.5 + i - j - layer) * 13.5 * scale * envelope if layer < 2 else 0
-                    point += QPointF(
-                        sep_x
-                        + math.sin(seconds * (10 + layer) + i + j)
-                        * math.cos(seconds * 8 - i + j)
-                        * noise_x
-                        * envelope
-                        * visibility,
-                        sep_y
-                        + math.cos(seconds * (9 - layer) + i - j)
-                        * math.sin(seconds * 7 + i - j)
-                        * noise_y
-                        * envelope
-                        * visibility,
-                    )
-                    path.lineTo(point)
-                    if t == fraction:
-                        break
-            paths.append(path)
 
-        # Wide low-alpha bloom -> colored energy -> narrow white core.
-        for path, width, alpha, color in (
-            (paths[0], 30, 0.055, accent),
-            (paths[0], 20, 0.09, accent),
-            (paths[1], 11, 0.22, accent.lighter(118)),
-            (paths[2], 5.2, 0.50, accent.lighter(145)),
-            (paths[3], 2.1, 0.92, QColor("white")),
-        ):
-            color = QColor(color)
-            color.setAlphaF(min(1.0, alpha * visibility))
-            painter.setPen(
-                QPen(color, width * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
-            )
+def _envelope(t: float, rise: float = 0.15, fall: float = 0.4) -> float:
+    return max(0.0, min(1.0, t / rise, (1.0 - t) / fall))
+
+
+def _lightning_band(slider: GainSlider, painter: QPainter, t: float) -> None:
+    phase = t * 1600
+    _, track, _, flash, fade = band_effect_state(phase, slider.effect_index)
+    visibility = 1.0 - fade
+    if visibility <= 0 or max(track, flash) <= 0:
+        return
+
+    scale = max(0.5, slider.width() / 32)
+    accent = QColor(slider.effect_accent)
+
+    fill, fill_path = slider.effect_fill_path()
+    if fill.height() > 0 and flash > 0:
+        overlay = QLinearGradient(fill.topLeft(), fill.bottomLeft())
+        top = QColor(accent).lighter(130)
+        top.setAlphaF(min(1.0, flash * visibility * 0.8))
+        mid = QColor(accent)
+        mid.setAlphaF(min(1.0, flash * visibility * 0.55))
+        clear = QColor(accent)
+        clear.setAlpha(0)
+        overlay.setColorAt(0.0, top)
+        overlay.setColorAt(0.5, mid)
+        overlay.setColorAt(1.0, clear)
+        painter.fillPath(fill_path, overlay)
+
+    if fill.height() > 0 and 0.0 < track < 1.0:
+        stripe_height = 70 * scale
+        y = fill.top() + track * (fill.height() + stripe_height) - stripe_height
+        stripe = QRectF(fill.left(), y, fill.width(), stripe_height)
+        gradient = QLinearGradient(stripe.topLeft(), stripe.bottomLeft())
+        clear = QColor(accent)
+        clear.setAlpha(0)
+        pulse = max(0.0, math.sin(track * math.pi)) * visibility
+        bright = QColor("white")
+        bright.setAlphaF(min(1.0, pulse))
+        side = QColor(accent)
+        side.setAlphaF(min(1.0, pulse * 0.9))
+        gradient.setColorAt(0.0, clear)
+        gradient.setColorAt(0.2, side)
+        gradient.setColorAt(0.5, bright)
+        gradient.setColorAt(0.8, side)
+        gradient.setColorAt(1.0, clear)
+        painter.save()
+        painter.setClipPath(fill_path)
+        painter.fillRect(stripe, gradient)
+        painter.restore()
+
+
+def _highlight_band(slider: GainSlider, painter: QPainter, t: float) -> None:
+    slider.paint_preset_highlight(painter)
+
+
+def _lightning_overlay(overlay: EqualizerEffectOverlay, painter: QPainter, t: float) -> None:
+    phase = t * 1600
+    progress, fade = lightning_state(phase)
+    if progress <= 0 or fade >= 1 or len(overlay.bands.sliders) < 2:
+        return
+    points = overlay.points()
+    visibility = 1.0 - fade
+    accent = QColor(overlay.bands.accentColor)
+    scale = overlay.bands.scale
+    overlay.clip_to_surface(painter)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+
+    # Soft ring bloom plus a crisp inner edge. Painting several cheap alpha
+    # passes gives a much closer energy falloff to the QML MultiEffect source
+    # without running a Gaussian blur over the popup every frame.
+    for index, slider in enumerate(overlay.bands.sliders):
+        point = overlay.map_slider_point(slider, QPoint(slider.width() // 2, 0))
+        _, _, ring, _, _ = band_effect_state(phase, index)
+        if ring <= 0:
+            continue
+        base = QRectF(
+            0,
+            0,
+            (29 + ring * 34) * scale,
+            slider.height() + (17 + ring * 51) * scale,
+        )
+        base.moveCenter(QPointF(point.x(), point.y() + slider.height() / 2))
+        for extra, width, alpha in ((10, 10, 0.07), (5, 6, 0.13), (0, 2.1, 0.55)):
+            rect = base.adjusted(-extra * scale, -extra * scale, extra * scale, extra * scale)
+            color = QColor(accent).lighter(118 if extra == 0 else 105)
+            color.setAlphaF(min(1.0, ring * visibility * alpha))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
+            painter.setPen(QPen(color, width * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawRoundedRect(rect, rect.width() / 2, min(rect.width(), rect.height()) / 2)
+
+    seconds = phase / 1000
+    paths: list[QPainterPath] = []
+    for layer in range(4):
+        path = QPainterPath(points[0])
+        for i in range(9):
+            if i > progress:
+                break
+            fraction = min(1.0, progress - i)
+            steps = 6 if layer == 3 else 8
+            for j in range(1, steps + 1):
+                t = min(j / steps, fraction)
+                point = points[i] + (points[i + 1] - points[i]) * t
+                envelope = math.sin(t * math.pi)
+                noise_x = 1 if layer == 3 else (4 - layer) * 4
+                noise_y = 1 if layer == 3 else (4 - layer) * 5
+                sep_x = math.sin(seconds * 3 + i + j + layer) * 9 * scale * envelope if layer < 2 else 0
+                sep_y = math.cos(seconds * 2.5 + i - j - layer) * 13.5 * scale * envelope if layer < 2 else 0
+                point += QPointF(
+                    sep_x
+                    + math.sin(seconds * (10 + layer) + i + j)
+                    * math.cos(seconds * 8 - i + j)
+                    * noise_x
+                    * envelope
+                    * visibility,
+                    sep_y
+                    + math.cos(seconds * (9 - layer) + i - j)
+                    * math.sin(seconds * 7 + i - j)
+                    * noise_y
+                    * envelope
+                    * visibility,
+                )
+                path.lineTo(point)
+                if t == fraction:
+                    break
+        paths.append(path)
+
+    # Wide low-alpha bloom -> colored energy -> narrow white core.
+    for path, width, alpha, color in (
+        (paths[0], 30, 0.055, accent),
+        (paths[0], 20, 0.09, accent),
+        (paths[1], 11, 0.22, accent.lighter(118)),
+        (paths[2], 5.2, 0.50, accent.lighter(145)),
+        (paths[3], 2.1, 0.92, QColor("white")),
+    ):
+        color = QColor(color)
+        color.setAlphaF(min(1.0, alpha * visibility))
+        painter.setPen(
+            QPen(color, width * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+
+
+def _glow_band(slider: GainSlider, painter: QPainter, t: float) -> None:
+    """Bloom proportional to how far this band travels."""
+    distance = slider.travel_share
+    strength = distance * _envelope(t, 0.12, 0.55)
+    if strength <= 0:
+        return
+    fill, path = slider.effect_fill_path()
+    accent = slider.effect_accent
+    wash = QColor(accent).lighter(140)
+    wash.setAlphaF(min(1.0, 0.7 * strength))
+    if fill.height() > 0:
+        painter.fillPath(path, wash)
+    halo = QRadialGradient(QPointF(fill.center().x(), fill.top()), max(8.0, slider.width() * 0.55))
+    bright = QColor(accent).lighter(160)
+    bright.setAlphaF(min(1.0, 0.8 * strength))
+    clear = QColor(bright)
+    clear.setAlpha(0)
+    halo.setColorAt(0, bright)
+    halo.setColorAt(1, clear)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(halo)
+    painter.drawRect(QRectF(slider.rect()))
+
+
+def _scan_progress(t: float) -> float:
+    return QEasingCurve(QEasingCurve.Type.InOutSine).valueForProgress(t)
+
+
+def _scan_band(slider: GainSlider, painter: QPainter, t: float) -> None:
+    """Flash as the scan bar crosses this band."""
+    flash = max(0.0, 1 - abs(_scan_progress(t) * 1.2 - 0.1 - (slider.effect_index + 0.5) / 10) * 10 / 1.5)
+    if flash <= 0:
+        return
+    fill, path = slider.effect_fill_path()
+    color = slider.effect_accent.lighter(150)
+    color.setAlphaF(min(1.0, 0.85 * flash))
+    if fill.height() > 0:
+        painter.fillPath(path, color)
+
+
+def _scan_overlay(overlay: EqualizerEffectOverlay, painter: QPainter, t: float) -> None:
+    """One light bar crossing the section."""
+    width = overlay.width()
+    x = (_scan_progress(t) * 1.2 - 0.1) * width
+    if not -width * 0.1 <= x <= width * 1.1:
+        return
+    overlay.clip_to_surface(painter)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    accent = QColor(overlay.bands.accentColor)
+    spread = 28 * overlay.bands.scale
+    gradient = QLinearGradient(x - spread, 0, x + spread, 0)
+    clear = QColor(accent)
+    clear.setAlpha(0)
+    core = QColor(accent).lighter(150)
+    core.setAlphaF(0.5 * _envelope(t, 0.08, 0.2))
+    gradient.setColorAt(0, clear)
+    gradient.setColorAt(0.5, core)
+    gradient.setColorAt(1, clear)
+    painter.fillRect(QRectF(x - spread, 0, spread * 2, overlay.height()), gradient)
+
+
+def _curve_overlay(overlay: EqualizerEffectOverlay, painter: QPainter, t: float) -> None:
+    """A glowing spline through the handle centres; it follows them while they travel."""
+    points = overlay.points()
+    visibility = _envelope(t, 0.1, 0.45)
+    if len(points) < 2 or visibility <= 0:
+        return
+    path = QPainterPath(points[0])
+    for index in range(len(points) - 1):
+        before = points[max(0, index - 1)]
+        start, end = points[index], points[index + 1]
+        after = points[min(len(points) - 1, index + 2)]
+        path.cubicTo(start + (end - before) / 6, end - (after - start) / 6, end)
+    overlay.clip_to_surface(painter)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    accent = QColor(overlay.bands.accentColor)
+    scale = overlay.bands.scale
+    for width, alpha, color in ((16, 0.06, accent), (8, 0.16, accent.lighter(120)), (2.4, 0.85, accent.lighter(160))):
+        stroke = QColor(color)
+        stroke.setAlphaF(min(1.0, alpha * visibility))
+        painter.setPen(
+            QPen(stroke, width * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        )
+        painter.drawPath(path)
+
+
+@dataclass(frozen=True)
+class PresetEffect:
+    """One preset transition: duration at speed 1 and paint hooks taking normalized time."""
+
+    duration: int
+    band: Callable[[GainSlider, QPainter, float], None] | None = None
+    overlay: Callable[[EqualizerEffectOverlay, QPainter, float], None] | None = None
+
+
+PRESET_EFFECTS: dict[str, PresetEffect] = {
+    "lightning": PresetEffect(1600, _lightning_band, _lightning_overlay),
+    "ripple": PresetEffect(700, _highlight_band),
+    "center_pulse": PresetEffect(650, _highlight_band),
+    "curve": PresetEffect(1200, overlay=_curve_overlay),
+    "glow": PresetEffect(900, _glow_band),
+    "scan": PresetEffect(1000, _scan_band, _scan_overlay),
+}
+PRESET_EFFECT_DURATIONS = {name: effect.duration for name, effect in PRESET_EFFECTS.items()}
+
+_EASINGS = {
+    "out_quart": QEasingCurve.Type.OutQuart,
+    "out_cubic": QEasingCurve.Type.OutCubic,
+    "out_back": QEasingCurve.Type.OutBack,
+    "in_out_sine": QEasingCurve.Type.InOutSine,
+}
+
+
+class PresetTravel(QAbstractAnimation):
+    """All ten handles on one animation; a new selection restarts from the presented gains."""
+
+    def __init__(self, bands: EqualizerBands) -> None:
+        super().__init__(bands)
+        self.bands = bands
+        self.configure(MediaV2EqualizerPresetMotionConfig(), 1.0)
+        self.starts = [0.0] * len(bands.sliders)
+        self.targets: list[float | None] = [None] * len(bands.sliders)
+        self._total = 1
+
+    def configure(self, motion: MediaV2EqualizerPresetMotionConfig, speed: float) -> None:
+        self.style = motion.style
+        self.travel = max(1.0, motion.duration_ms * speed)
+        self.stagger = motion.stagger_ms * speed
+        self.curve = QEasingCurve(_EASINGS[motion.easing])
+        if self.style == "wave":
+            self.curve = QEasingCurve(QEasingCurve.Type.OutBack)
+            self.curve.setOvershoot(1.0)
+
+    def duration(self) -> int:
+        return self._total
+
+    def delay(self, index: int) -> float:
+        count = len(self.bands.sliders)
+        outward = max(0, round(abs(index - (count - 1) / 2) - 0.5))
+        order = {
+            "cascade": index,
+            "wave": index,
+            "center_out": outward,
+            "edges_in": max(0, round((count - 1) / 2 - 0.5)) - outward,
+        }.get(self.style, 0)
+        return order * self.stagger
+
+    def ease(self, progress: float) -> float:
+        if self.style == "spring":
+            return 1 - math.exp(-6 * progress) * math.cos(10 * progress)
+        return self.curve.valueForProgress(progress)
+
+    def move(self, values: Sequence[float], held: Callable[[int], bool]) -> None:
+        """Travel to new targets; identical targets leave running travel untouched."""
+        bands = [index for index in range(len(values)) if not held(index)]
+        if self.state() == QAbstractAnimation.State.Running and all(self.targets[i] == float(values[i]) for i in bands):
+            return
+        self.stop()
+        sliders = self.bands.sliders
+        self.targets = [float(values[i]) if i in bands else None for i in range(len(values))]
+        self.starts = [slider.gain for slider in sliders]
+        self.bands.travel_shares = [abs(self.starts[i] - float(values[i])) / 24 for i in range(len(values))]
+        self._total = max(1, round(max((self.delay(i) for i in bands), default=0) + self.travel))
+        self.start()
+
+    def release(self, index: int) -> None:
+        self.targets[index] = None
+
+    def settle(self) -> None:
+        self.stop()
+        for slider, target in zip(self.bands.sliders, self.targets):
+            if target is not None:
+                slider.gain = target
+
+    def updateCurrentTime(self, currentTime: int) -> None:
+        for index, (slider, target) in enumerate(zip(self.bands.sliders, self.targets)):
+            if target is None:
+                continue
+            progress = (currentTime - self.delay(index)) / self.travel
+            start = self.starts[index]
+            if progress <= 0:
+                slider.gain = start
+            elif progress >= 1:
+                slider.gain = target
+            else:
+                slider.gain = start + (target - start) * self.ease(progress)
 
 
 class EqualizerBands(QFrame):
@@ -452,6 +662,8 @@ class EqualizerBands(QFrame):
         self.phase = 1600.0
         self.effect_mode = "none"
         self.effect_overlay: EqualizerEffectOverlay | None = None
+        self.random = random.Random()
+        self._travel_shares = [0.0] * 10
         palette = self.palette()
         palette.setColor(QPalette.ColorRole.WindowText, QColor("#cba6f7"))
         self.setPalette(palette)
@@ -481,6 +693,7 @@ class EqualizerBands(QFrame):
                     band, 430, 860, offset=(0, round((25 + 7 * index) * scale)), easing=QEasingCurve.Type.OutExpo
                 )
             )
+        self.travel = PresetTravel(self)
 
     def _get_accentColor(self):
         return self.palette().color(QPalette.ColorRole.WindowText)
@@ -517,10 +730,22 @@ class EqualizerBands(QFrame):
         if self.effect_overlay is not None:
             self.effect_overlay.update()
 
+    @property
+    def travel_shares(self) -> list[float]:
+        return self._travel_shares
+
+    @travel_shares.setter
+    def travel_shares(self, shares: list[float]) -> None:
+        self._travel_shares = shares
+        for slider, share in zip(self.sliders, shares):
+            slider.travel_share = share
+
     def trigger(self, effect: str = "lightning", speed: float = 1.0):
         animation = getattr(self, "_motion", {}).get("lightningPhase")
         if animation:
             animation.stop()
+        if effect == "random":
+            effect = self.random.choice(sorted(PRESET_EFFECTS))
         self.set_effect_mode(effect)
         self.lightningPhase = 0.0
         duration = PRESET_EFFECT_DURATIONS.get(effect, 0)
@@ -533,6 +758,7 @@ class EqualizerBands(QFrame):
         if a0 is None:
             return None
         settle(self)
+        self.travel.settle()
         super().hideEvent(a0)
 
     def paintEvent(self, a0: QPaintEvent | None):
@@ -636,6 +862,7 @@ class EqualizerPanel(QFrame):
         body_layout.setSpacing(s(9))
         layout.addWidget(self.body)
         self.bands = EqualizerBands(scale, self.body)
+        self.bands.travel.configure(options.preset_motion, self.effect_speed)
         body_layout.addWidget(self.bands)
         self.effects = EqualizerEffectOverlay(self.bands, effect_parent or self, effect_radius)
         self.bands.effect_overlay = self.effects
@@ -758,16 +985,17 @@ class EqualizerPanel(QFrame):
 
     def _show_gains(self, values: tuple[float, ...], motion: bool) -> None:
         visible = self._page_active and self.isVisible()
-        for slider, gain in zip(self.bands.sliders, values):
-            tween = cast(dict[str, QPropertyAnimation], getattr(slider, "_motion", {})).get("gain")
-            if visible and slider.isSliderDown():
-                continue
-            if motion and visible:
-                if tween is None or tween.state() != QPropertyAnimation.State.Running or tween.endValue() != gain:
-                    animate(slider, "gain", float(gain), self._duration(350), QEasingCurve.Type.OutQuart)
-            else:
-                if tween is not None:
-                    tween.stop()
+        sliders, travel = self.bands.sliders, self.bands.travel
+
+        def held(index: int) -> bool:
+            return visible and sliders[index].isSliderDown()
+
+        if motion and visible:
+            travel.move(values, held)
+            return
+        for index, (slider, gain) in enumerate(zip(sliders, values)):
+            if not held(index):
+                travel.release(index)
                 slider.gain = float(gain)
 
     def _present_gains(self, values: tuple[float, ...], *, motion: bool = True):
@@ -779,9 +1007,7 @@ class EqualizerPanel(QFrame):
             self._sync_selection()
 
     def _interrupt(self, slider: GainSlider):
-        animation = getattr(slider, "_motion", {}).get("gain")
-        if animation:
-            animation.stop()
+        self.bands.travel.release(self.bands.sliders.index(slider))
 
     def _custom(self, index: int, slider: GainSlider, value: float, *, expected_draft: object | None = None):
         if slider.programmatic or not self._page_active:

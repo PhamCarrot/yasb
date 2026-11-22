@@ -11,7 +11,7 @@ import math
 import random
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import ClassVar, Literal, cast
@@ -45,6 +45,9 @@ class _Job:
     generation: int
     attempt: int = 0
     ready_at: float = 0
+    # "search" looks for a word-timed replacement after publishing a result;
+    # "resumed" continues an interrupted search once and records no resume point.
+    upgrade: Literal["", "search", "resumed"] = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,7 @@ class _Cached:
     state: LyricsState
     expires: float
     weight: int
+    resume: LyricsRequest | None = None
 
 
 def retry_delay(value: bytes, now: datetime | None = None) -> float:
@@ -122,12 +126,14 @@ class LyricsService(QObject):
         timeout_ms: int = 10000,
         providers: tuple[Provider, ...] = ("lrclib", "netease", "better_lyrics"),
         credentials: dict[str, str] | None = None,
+        prefer_word_timed: bool = False,
     ) -> None:
         super().__init__(QApplication.instance())
         self._manager = manager or QNetworkAccessManager(self)
         self._spacing = max(200, spacing_ms) / 1000
         self._providers = self._normalize_providers(providers)
         self._credentials = dict(credentials or {})
+        self._prefer_word_timed = prefer_word_timed
         self._interests: dict[object, LyricsQuery] = {}
         self._generations: dict[LyricsQuery, int] = {}
         self._states: dict[LyricsQuery, LyricsState] = {}
@@ -175,6 +181,7 @@ class LyricsService(QObject):
         spacing_ms: int,
         timeout_ms: int,
         credentials: dict[str, str] | None = None,
+        prefer_word_timed: bool = False,
     ) -> None:
         """Apply lookup options before a new demand is watched."""
         if self._reply is not None or (self._parse_task is not None and not self._parse_task.done()):
@@ -183,6 +190,7 @@ class LyricsService(QObject):
         self._spacing = max(200, spacing_ms) / 1000
         self._timeout.setInterval(max(1000, timeout_ms))
         self._credentials = dict(credentials or {})
+        self._prefer_word_timed = prefer_word_timed
 
     def _request_for(self, query: LyricsQuery) -> LyricsRequest:
         provider = self._providers[0]
@@ -208,6 +216,10 @@ class LyricsService(QObject):
         return self._states.get(key, self._cached(key) or LyricsState())
 
     def _cached(self, query: LyricsQuery) -> LyricsState | None:
+        entry = self._cached_entry(query)
+        return entry.state if entry is not None else None
+
+    def _cached_entry(self, query: LyricsQuery) -> _Cached | None:
         cached = self._cache.get(query)
         if cached is None:
             return None
@@ -215,7 +227,12 @@ class LyricsService(QObject):
             self._cache_bytes -= self._cache.pop(query).weight
             return None
         self._cache.move_to_end(query)
-        return cached.state
+        return cached
+
+    def _remember(self, query: LyricsQuery, request: LyricsRequest | None) -> None:
+        cached = self._cache.get(query)
+        if cached is not None and cached.resume != request:
+            self._cache[query] = replace(cached, resume=request)
 
     def watch(self, token: object, query: LyricsQuery) -> None:
         if self._closed:
@@ -230,10 +247,14 @@ class LyricsService(QObject):
         if query not in self._generations:
             self._counter += 1
             self._generations[query] = self._counter
-            cached = self._cached(query)
-            self._states[query] = cached or self._initial_state(query)
+            cached = self._cached_entry(query)
+            self._states[query] = cached.state if cached is not None else self._initial_state(query)
             if cached is None and query.artist:
                 self._queue[query] = _Job(self._request_for(query), self._counter)
+            elif cached is not None and cached.resume is not None and query.artist and self._prefer_word_timed:
+                # The last view left during a word-timed search; finish it once.
+                self._queue[query] = _Job(cached.resume, self._counter, upgrade="resumed")
+                self._remember(query, None)
         self.changed.emit(query)
         self._pump()
 
@@ -380,7 +401,7 @@ class LyricsService(QObject):
             ready = time.monotonic() + delay + random.uniform(0, delay * 0.3)
             self._blocked_until[job.request.provider] = ready
             if job.attempt < 2 and math.isfinite(delay) and delay <= 60:
-                self._queue[job.request.query] = _Job(job.request, job.generation, job.attempt + 1, ready)
+                self._queue[job.request.query] = replace(job, attempt=job.attempt + 1, ready_at=ready)
             else:
                 self._publish(job, LyricsState("error", detail="Provider is rate limited; try later"))
         elif (
@@ -401,7 +422,7 @@ class LyricsService(QObject):
         else:
             fallback = job.request.fallback()
             if fallback is not None:
-                self._queue[job.request.query] = _Job(fallback, job.generation)
+                self._enqueue(job, fallback)
             else:
                 self._publish(job, LyricsState("error", detail=error or f"Lyric provider returned HTTP{status}"))
         self._pump()
@@ -412,30 +433,56 @@ class LyricsService(QObject):
             if not self._wanted(job):
                 return
             if result.document is not None:
-                document = result.document
-                if document.lines or document.plain or document.instrumental:
-                    self._publish(job, LyricsState("ready", document))
-                else:
-                    self._publish(job, LyricsState("missing", detail="The file contains no lyrics"))
+                self._found(job, result.document)
             elif result.next_request is not None:
-                self._queue[job.request.query] = _Job(result.next_request, job.generation)
+                self._enqueue(job, result.next_request)
             else:
                 self._publish(job, LyricsState("missing", detail=result.detail))
         except (ValueError, OSError) as error:
             if self._wanted(job):
                 fallback = job.request.fallback()
                 if fallback is not None:
-                    self._queue[job.request.query] = _Job(fallback, job.generation)
+                    self._enqueue(job, fallback)
                 else:
                     self._publish(job, LyricsState("error", detail=str(error)))
         finally:
             self._parse_task = None
             self._pump()
 
-    def _publish(self, job: _Job, state: LyricsState) -> None:
+    def _enqueue(self, job: _Job, request: LyricsRequest) -> None:
+        self._queue[request.query] = replace(job, request=request, attempt=0, ready_at=0)
+        if job.upgrade == "search":
+            self._remember(request.query, request)
+
+    def _found(self, job: _Job, document: LyricsDocument) -> None:
+        if job.upgrade:
+            # Only a word-timed document may replace the published one.
+            following = None if document.word_synced else job.request.fallback()
+            if following is not None:
+                self._enqueue(job, following)
+            else:
+                self._publish(job, LyricsState("ready", document))
+            return
+        if not (document.lines or document.plain or document.instrumental):
+            self._publish(job, LyricsState("missing", detail="The file contains no lyrics"))
+            return
+        following = (
+            job.request.fallback()
+            if self._prefer_word_timed and not document.word_synced and not document.instrumental
+            else None
+        )
+        self._publish(job, LyricsState("ready", document), resume=following)
+        if following is not None:
+            self._queue[job.request.query] = _Job(following, job.generation, upgrade="search")
+
+    def _publish(self, job: _Job, state: LyricsState, *, resume: LyricsRequest | None = None) -> None:
         if not self._wanted(job):
             return
         query = job.request.query
+        if job.upgrade and not (state.status == "ready" and state.document is not None and state.document.word_synced):
+            # A miss, error or plain result ends the search; the published result stays.
+            self._remember(query, None)
+            return
         self._states[query] = state
         old = self._cache.pop(query, None)
         if old is not None:
@@ -455,7 +502,7 @@ class LyricsService(QObject):
                 _, removed = self._cache.popitem(last=False)
                 self._cache_bytes -= removed.weight
             ttl = 1800 if state.status == "ready" else 30
-            self._cache[query] = _Cached(state, time.monotonic() + ttl, weight)
+            self._cache[query] = _Cached(state, time.monotonic() + ttl, weight, resume)
             self._cache_bytes += weight
         self.changed.emit(query)
 

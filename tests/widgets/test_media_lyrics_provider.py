@@ -112,6 +112,47 @@ def test_better_lyrics_decodes_ttml_word_timing() -> None:
     assert result.document.word_synced
 
 
+def ttml_line(paragraph: str):
+    body = {"ttml": f"<tt><body>{paragraph}</body></tt>"}
+    result = interpret_response(LyricsRequest(QUERY, stage="better-lyrics"), json.dumps(body).encode())
+    assert result.document is not None
+    line = result.document.lines[0]
+    assert "".join(word.text for word in line.words) == line.text or not line.words
+    return line
+
+
+def test_ttml_keeps_whitespace_between_spans_on_the_preceding_word() -> None:
+    line = ttml_line(
+        '<p begin="1s" end="3s"><span begin="1s" end="1.5s">Hello</span> '
+        '<span begin="1.5s" end="2s">big</span> <span begin="2s" end="3s">world</span></p>'
+    )
+    assert line.text == "Hello big world"
+    assert [(word.text, word.start_ms, word.end_ms) for word in line.words] == [
+        ("Hello ", 1000, 1500),
+        ("big ", 1500, 2000),
+        ("world", 2000, 3000),
+    ]
+
+
+def test_ttml_nested_background_span_yields_each_timed_leaf_once() -> None:
+    line = ttml_line(
+        '<p begin="1s" end="4s"><span begin="1s" end="2s">Lead</span>'
+        '<span role="x-bg">(<span begin="2s" end="3s">echo</span> <span begin="3s" end="4s">here</span>)</span></p>'
+    )
+    assert line.text == "Lead(echo here)"
+    assert [(word.text, word.start_ms) for word in line.words] == [("Lead(", 1000), ("echo ", 2000), ("here)", 3000)]
+
+
+def test_ttml_paragraph_without_timed_spans_is_line_timed_only() -> None:
+    plain = ttml_line('<p begin="2s" end="4s">Only line timing</p>')
+    assert plain.text == "Only line timing" and plain.words == () and plain.start_ms == 2000
+    untimed = ttml_line('<p begin="2s"><span>No</span> <span>word times</span></p>')
+    assert untimed.text == "No word times" and untimed.words == ()
+    leading = ttml_line('<p begin="0s">¿<span begin="0s" end="1s">Qué</span>?</p>')
+    assert leading.text == "¿Qué?" and [word.text for word in leading.words] == ["¿Qué?"]
+    assert leading.words[0].start_ms == 0
+
+
 def test_opt_in_private_provider_urls_and_fallback_stages() -> None:
     musixmatch = LyricsRequest(
         QUERY,

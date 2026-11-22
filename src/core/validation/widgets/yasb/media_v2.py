@@ -71,11 +71,27 @@ class MediaEqualizerApoConfig(CustomBaseModel):
     manage_include: bool = False
 
 
+class MediaV2EqualizerPresetMotionConfig(CustomBaseModel):
+    style: Literal["together", "cascade", "center_out", "edges_in", "wave", "spring"] = "together"
+    duration_ms: int = Field(default=350, ge=80, le=2000)
+    stagger_ms: int = Field(default=0, ge=0, le=200)
+    easing: Literal["out_quart", "out_cubic", "out_back", "in_out_sine"] = "out_quart"
+
+    @model_validator(mode="after")
+    def bounded_travel(self) -> Self:
+        if self.duration_ms + 9 * self.stagger_ms > 3000:
+            raise ValueError("popup.equalizer.preset_motion: duration_ms + 9 * stagger_ms must not exceed 3000")
+        return self
+
+
 class MediaEqualizerConfig(CustomBaseModel):
     preset: Preset = "Flat"
     custom_bands: list[Gain] = Field(default_factory=lambda: [0] * 10, min_length=10, max_length=10)
-    preset_effect: Literal["lightning", "ripple", "center_pulse", "none"] = "lightning"
+    preset_effect: Literal["lightning", "ripple", "center_pulse", "curve", "glow", "scan", "random", "none"] = (
+        "lightning"
+    )
     effect_speed: float = Field(default=1.0, ge=0.4, le=3.0, allow_inf_nan=False)
+    preset_motion: MediaV2EqualizerPresetMotionConfig = Field(default_factory=MediaV2EqualizerPresetMotionConfig)
     backend: Literal["visual", "equalizer_apo"] = "visual"
     apo: MediaEqualizerApoConfig = Field(default_factory=MediaEqualizerApoConfig)
 
@@ -116,6 +132,50 @@ class MediaLyricsMarginsConfig(CustomBaseModel):
     placeholder: int = Field(default=8, ge=0, le=64)
 
 
+def _require_colors(model: CustomBaseModel, *names: str) -> None:
+    for name in names:
+        value = getattr(model, name)
+        if value is not None and not QColor(value).isValid():
+            raise ValueError(f"popup.lyrics {name} must be a valid Qt color")
+
+
+class MediaV2LyricsLineStyleConfig(CustomBaseModel):
+    color: str | None = None
+    background: str | None = None
+    bold: bool | None = None
+    italic: bool = False
+    underline: bool = False
+    strikethrough: bool = False
+    opacity: float | None = Field(default=None, ge=0.0, le=1.0, allow_inf_nan=False)
+    scale: float | None = Field(default=None, ge=0.5, le=1.5, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def valid_colors(self) -> Self:
+        _require_colors(self, "color", "background")
+        return self
+
+
+class MediaV2LyricsStyleConfig(CustomBaseModel):
+    before: MediaV2LyricsLineStyleConfig = Field(default_factory=MediaV2LyricsLineStyleConfig)
+    current: MediaV2LyricsLineStyleConfig = Field(default_factory=MediaV2LyricsLineStyleConfig)
+    after: MediaV2LyricsLineStyleConfig = Field(default_factory=MediaV2LyricsLineStyleConfig)
+    background_radius: int = Field(default=6, ge=0, le=32)
+    background_padding: int = Field(default=4, ge=0, le=16)
+
+
+class MediaV2LyricsGlowConfig(CustomBaseModel):
+    enabled: bool = False
+    radius: int = Field(default=8, ge=0, le=32)
+    strength: float = Field(default=0.6, ge=0.0, le=2.0, allow_inf_nan=False)
+    color: str | None = None
+    target: Literal["line", "sung"] = "line"
+
+    @model_validator(mode="after")
+    def valid_color(self) -> Self:
+        _require_colors(self, "color")
+        return self
+
+
 class MediaLyricsConfig(CustomBaseModel):
     alignment: Literal["left", "center", "right"] = "left"
     center_position: float = Field(default=0.44, ge=0.0, le=1.0, allow_inf_nan=False)
@@ -133,6 +193,14 @@ class MediaLyricsConfig(CustomBaseModel):
     animation_duration_ms: int = Field(default=320, ge=0, le=5000)
     browse_return_ms: int = Field(default=4000, ge=0, le=60000)
     drag_threshold: int = Field(default=4, ge=1, le=64)
+    style: MediaV2LyricsStyleConfig = Field(default_factory=MediaV2LyricsStyleConfig)
+    glow: MediaV2LyricsGlowConfig = Field(default_factory=MediaV2LyricsGlowConfig)
+    word_highlight: Literal["step", "sweep"] = "step"
+    sweep_softness: float = Field(default=0.5, ge=0.0, le=3.0, allow_inf_nan=False)
+    sweep_fps: int = Field(default=30, ge=10, le=60)
+    unsung_opacity: float = Field(default=0.4, ge=0.0, le=1.0, allow_inf_nan=False)
+    line_sweep: bool = False
+    line_sweep_max_ms: int = Field(default=6000, ge=500, le=30000)
     auto_lookup: bool = True
     provider_order: list[Literal["lrclib", "netease", "better_lyrics", "musixmatch"]] = Field(
         default_factory=lambda: ["lrclib", "netease", "better_lyrics"],
@@ -140,6 +208,7 @@ class MediaLyricsConfig(CustomBaseModel):
         max_length=4,
         json_schema_extra={"uniqueItems": True},
     )
+    prefer_word_timed: bool = True
     better_lyrics_enabled: bool = True
     musixmatch_enabled: bool = False
     musixmatch_api_key: str = ""
@@ -203,6 +272,11 @@ class MediaLyricsConfig(CustomBaseModel):
         return {"musixmatch": self.musixmatch_api_key.strip()}
 
 
+class MediaV2AudioConfig(CustomBaseModel):
+    motion: Literal["reference", "enhanced"] = "reference"
+    meters: bool = False
+
+
 class MediaControlsConfig(CustomBaseModel):
     size: int = Field(default=30, ge=20, le=96)
 
@@ -238,6 +312,7 @@ class MediaV2PopupConfig(CustomBaseModel):
     lyrics: MediaLyricsConfig = Field(default_factory=MediaLyricsConfig)
     disc: MediaDiscConfig = Field(default_factory=MediaDiscConfig)
     equalizer: MediaEqualizerConfig = Field(default_factory=MediaEqualizerConfig)
+    audio: MediaV2AudioConfig = Field(default_factory=MediaV2AudioConfig)
     background: MediaBackgroundConfig = Field(default_factory=MediaBackgroundConfig)
     border: MediaBorderConfig = Field(default_factory=MediaBorderConfig)
 

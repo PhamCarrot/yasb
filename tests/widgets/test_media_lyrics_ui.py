@@ -1,12 +1,25 @@
 # pyright: reportPrivateUsage=false
 
 from dataclasses import replace
+from functools import partial
 from typing import Any, cast
 
 import PyQt6.sip as sip
 import pytest
-from PyQt6.QtCore import QDeadlineTimer, QObject, QPoint, QRect, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPalette, QPixmap
+from PyQt6.QtCore import (
+    QAbstractAnimation,
+    QDeadlineTimer,
+    QObject,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    Qt,
+    QTimer,
+    QVariantAnimation,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPalette, QPixmap, QTextLayout
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QPushButton, QWidget
 
@@ -25,7 +38,7 @@ from core.widgets.services.media.model import (
     Timeline,
 )
 from core.widgets.yasb.media_v2_lyrics import MediaLyricsPanel
-from core.widgets.yasb.media_v2_lyrics_view import LyricsView
+from core.widgets.yasb.media_v2_lyrics_view import LyricsPlayhead, LyricsView
 from tests.widgets.test_media_lyrics_owner import run_loop as run_loop
 from tests.widgets.test_media_popup_geometry import make_popup
 
@@ -494,3 +507,541 @@ def test_popup_timeline_updates_lyrics_without_replacing_common_objects(
         popup.hide()
         popup.equalizer.apo.shutdown()
         sip.delete(parent)
+
+
+def record_update(updates: list[object], *args: object) -> None:
+    updates.append(args)
+
+
+def styled_view(qapp: QApplication, document: LyricsDocument, width: int = 590, **lyrics: object) -> LyricsView:
+    parent = QWidget()
+    view = LyricsView(1, parent, MediaLyricsConfig.model_validate(lyrics))
+    view.resize(width, 235)
+    view.set_document(document)
+    view.accept_input = True
+    parent.show()
+    view.show()
+    qapp.processEvents()
+    cast(Any, view).doItemsLayout()  # Public runtime QListView method absent from installed stubs.
+    setattr(view, "owned_parent", parent)
+    return view
+
+
+def numbered(count: int) -> LyricsDocument:
+    return parse_lyrics("\n".join(f"[{index * 1000},900]Line {index}" for index in range(count)))
+
+
+def test_state_styles_apply_per_side_and_keep_existing_precedence(qapp: QApplication) -> None:
+    view = styled_view(
+        qapp,
+        numbered(8),
+        inactive_opacity=0.25,
+        style={
+            "before": {"color": "#112233", "opacity": 0.5},
+            "current": {"color": "#ff00aa", "scale": 1.2},
+            "after": {"color": "#00ff00"},
+        },
+    )
+    try:
+        view.set_position(3100, ("session", 1))
+        view.finish_line_motion()
+        assert view.current_line == 3
+        assert [view.line_appearance(row)[1] for row in (0, 2)] == [0.5, 0.5]
+        assert [view.line_appearance(row)[1] for row in (4, 7)] == [0.25, 0.25]
+        assert view.line_appearance(3) == (1.2, 1.0, 1.0)
+        assert view.line_appearance(4)[0] == 0.88 and view.line_appearance(2)[0] == 0.88
+        assert view.delegate._line_color(2, 0.0) == QColor("#112233")
+        assert view.delegate._line_color(5, 0.0) == QColor("#00ff00")
+        assert view.delegate._line_color(3, 1.0) == QColor("#ff00aa")
+    finally:
+        dispose_view(view)
+    flat = styled_view(qapp, numbered(8), style={"after": {"opacity": 0.7, "scale": 0.6}})
+    try:
+        flat.set_position(3100, ("session", 1))
+        flat.finish_line_motion()
+        assert [flat.line_appearance(row) for row in (4, 7)] == [(0.6, 0.7, 0.0), (0.6, 0.7, 0.0)]
+        assert flat.line_appearance(2) == (0.88, 0.6, 0.0) and flat.line_appearance(1) == (0.8, 0.38, 0.0)
+    finally:
+        dispose_view(flat)
+
+
+def test_font_variants_decorations_and_backgrounds_follow_the_state(qapp: QApplication) -> None:
+    view = styled_view(
+        qapp,
+        numbered(6),
+        font_weight=400,
+        style={
+            "before": {"italic": True, "strikethrough": True},
+            "current": {"bold": True, "background": "#ff0000", "color": "#ffffff"},
+            "after": {"bold": False, "underline": True},
+        },
+    )
+    try:
+        view.set_position(2100, ("session", 1))
+        view.finish_line_motion()
+        before, current, after = view.looks
+        fonts = [
+            view.delegate.layout_for(row, look.variant).font() for row, look in ((1, before), (2, current), (3, after))
+        ]
+        assert [font.italic() for font in fonts] == [True, False, False]
+        assert [font.weight() for font in fonts] == [400, 700, 400]
+        assert [
+            (part.format.fontStrikeOut(), part.format.fontUnderline()) for part in view.delegate.formats(1, 0, 0)
+        ] == [(True, False)]
+        assert [part.format.fontUnderline() for part in view.delegate.formats(3, 0, 2)] == [True]
+        image = view.grab().toImage()
+        red = [
+            (x, y)
+            for y in range(0, image.height(), 2)
+            for x in range(0, image.width(), 2)
+            if image.pixelColor(x, y).red() > 200 and image.pixelColor(x, y).green() < 60
+        ]
+        row = view.visualRect(view.rows.index(3))
+        assert red and all(row.top() <= y <= row.bottom() for _, y in red)
+    finally:
+        dispose_view(view)
+
+
+def test_rows_keep_their_height_when_a_bold_current_line_wraps_differently(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text = "wide words keep wrapping " * 4
+    document = parse_lyrics(f"[00:01]intro\n[00:03]{text}\n[00:09]outro")
+    view = styled_view(qapp, document, font_family="Segoe UI", font_weight=400, style={"current": {"bold": True}})
+    try:
+        regular, bold = view.looks[0].variant, view.looks[1].variant
+        original = view.delegate.font_for
+        sample = "wide words keep wrapping "
+        regular_width = QFontMetricsF(original(regular)).horizontalAdvance(sample)
+        if QFontMetricsF(original(bold)).horizontalAdvance(sample) == regular_width:
+            # Font-less offscreen platforms render bold with regular advances.
+            def wider(variant: int) -> QFont:
+                font = original(variant)
+                if variant == bold:
+                    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+                return font
+
+            monkeypatch.setattr(view.delegate, "font_for", wider)
+            view.delegate.reset()
+        for width in range(220, 590, 7):
+            view.resize(width, 235)
+            qapp.processEvents()
+            if view.delegate.layout_for(1, regular).lineCount() != view.delegate.layout_for(1, bold).lineCount():
+                break
+        else:
+            pytest.fail("No width wraps bold and regular text differently")
+        cast(Any, view).doItemsLayout()
+        view.set_position(1500, ("session", 1))
+        view.finish_line_motion()
+        before = view.visualRect(view.rows.index(2)).height()
+        view.set_position(3500, ("session", 1))
+        view.finish_line_motion()
+        qapp.processEvents()
+        assert view.current_line == 1
+        assert view.visualRect(view.rows.index(2)).height() == before
+        tallest = max(view.delegate.layout_for(1, variant).lineCount() for variant in (regular, bold))
+        line = view.delegate.layout_for(1, bold).lineAt(0).height()
+        assert before >= round(tallest * line)
+    finally:
+        dispose_view(view)
+
+
+def test_line_transition_blends_colour_opacity_scale_and_crossfades_variants(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view = styled_view(
+        qapp,
+        numbered(8),
+        font_weight=400,
+        animation_duration_ms=400,
+        style={
+            "before": {"color": "#000000"},
+            "current": {"color": "#ff0000", "bold": True},
+            "after": {"color": "#0000ff"},
+        },
+    )
+    try:
+        view.set_position(2100, ("session", 1))
+        view.finish_line_motion()
+        view.browse()
+        view.set_position(3100, ("session", 1))
+        view._line_motion.setCurrentTime(200)
+        look = view.row_look(3)
+        assert (look.source, look.target) == (2, 1) and 0 < look.mix < 1
+        assert 0.88 < look.scale < 1 and 0.6 < look.opacity < 1 and 0 < look.tint < 1
+        color = view.delegate._line_color(3, look.tint)
+        assert 0 < color.red() < 255 and 0 < color.blue() < 255
+        outgoing = view.delegate._line_color(2, view.row_look(2).tint)
+        assert outgoing.blue() == 0 and 0 < outgoing.red() < 255
+        used: list[tuple[int, int]] = []
+        original = view.delegate.layout_for
+
+        def spy(row: int, variant: int = 0) -> QTextLayout:
+            used.append((row, variant))
+            return original(row, variant)
+
+        monkeypatch.setattr(view.delegate, "layout_for", spy)
+        view.grab()
+        assert {(3, view.looks[2].variant), (3, view.looks[1].variant)} <= set(used)
+        view._line_motion.setCurrentTime(400)
+        used.clear()
+        view.grab()
+        assert (3, view.looks[2].variant) not in used
+    finally:
+        dispose_view(view)
+
+
+def test_riced_options_stay_bounded_and_add_no_timers(qapp: QApplication, monkeypatch: pytest.MonkeyPatch) -> None:
+    view = styled_view(
+        qapp,
+        numbered(5000),
+        style={
+            "before": {"italic": True, "color": "#6c7086", "opacity": 0.55},
+            "current": {"bold": True, "background": "#33cba6f7", "scale": 1.1},
+            "after": {"bold": False, "underline": True},
+        },
+        glow={"enabled": True, "radius": 10, "strength": 0.7},
+    )
+    try:
+        assert len(view._styled_geometry[0]) == 3
+        for row in range(200):
+            view.delegate.row_height(row)
+        assert len(view.delegate.layouts) <= 64
+        for position in range(0, 12000, 1000):
+            view.set_position(position + 100, ("session", 1))
+            view.finish_line_motion()
+            assert not view.grab().isNull()
+        assert 0 < len(view.delegate.glows) <= 3
+        deadline = QDeadlineTimer(2000)
+        while view._layout_follow.isActive() or (
+            view._scroll_motion is not None and view._scroll_motion.state() == QPropertyAnimation.State.Running
+        ):
+            assert not deadline.hasExpired()
+            qapp.processEvents()
+        updates: list[object] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(view.canvas, "update", partial(record_update, updates))
+            view.set_position(11300, ("session", 1))
+            view.set_position(11500, ("session", 1))
+        assert updates == []
+        assert not [timer for timer in view.findChildren(QTimer) if timer.isActive()]
+        assert all(
+            motion.state() != QAbstractAnimation.State.Running for motion in view.findChildren(QAbstractAnimation)
+        )
+    finally:
+        dispose_view(view)
+
+
+def test_word_timed_position_ticks_repaint_only_the_current_row(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = tuple(
+        LyricLine(
+            index * 3000,
+            index * 3000 + 2900,
+            "one two",
+            (LyricWord(index * 3000, None, "one "), LyricWord(index * 3000 + 900, None, "two")),
+        )
+        for index in range(20)
+    )
+    view = styled_view(qapp, LyricsDocument(lines), glow={"enabled": True, "radius": 6})
+    try:
+        view.set_position(6100, ("session", 1))
+        view.finish_line_motion()
+        updates: list[object] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(view.canvas, "update", partial(record_update, updates))
+            view.set_position(6400, ("session", 1))
+        row = view.visualRect(view.rows.index(3))
+        extent = view.glow_extent()
+        assert extent > 0 and updates == [(row.adjusted(-extent, -extent, extent, extent),)]
+    finally:
+        dispose_view(view)
+
+
+def test_upgraded_document_replaces_in_place_while_following_and_browsing(qapp: QApplication) -> None:
+    timed = parse_lyrics("\n".join(f"[00:{index:02}]Line {index}" for index in range(40)))
+    words = LyricsDocument(
+        tuple(
+            LyricLine(line.start_ms, None, line.text, (LyricWord(line.start_ms, None, line.text),))
+            for line in timed.lines
+        ),
+        source="word-timed",
+    )
+    owner = Owner(timed)
+    parent, panel = make_panel(qapp, owner)
+    seeks: list[tuple[float, object]] = []
+
+    def seek(position: float, identity: object) -> None:
+        seeks.append((position, identity))
+
+    panel.seek_requested.connect(seek)
+    view = panel.view
+    try:
+        panel.set_state(replace(snapshot(), timeline=Timeline(position=20, duration=100, known=True)))
+        cast(Any, view).doItemsLayout()
+        deadline = QDeadlineTimer(2000)
+        while view._layout_follow.isActive() or (
+            view._scroll_motion is not None and view._scroll_motion.state() == QPropertyAnimation.State.Running
+        ):
+            assert not deadline.hasExpired()
+            qapp.processEvents()
+        if view._scroll_motion is not None:
+            view._scroll_motion.setCurrentTime(view._scroll_motion.duration())
+        current, value = view.current_line, view.scroll_bar.value()
+        assert current == 20 and value > 0
+        owner.current = LyricsState("ready", words)
+        owner.changed.emit(next(iter(owner.interests.values())))
+        assert view.document is words and view.current_line == current and not view.browsing
+        assert view.scroll_bar.value() == value
+        assert view._scroll_motion is None or view._scroll_motion.state() != QPropertyAnimation.State.Running
+        assert view._line_motion.state() != QVariantAnimation.State.Running
+        view.browse()
+        view.scroll_bar.setValue(value // 2)
+        third = LyricsDocument(words.lines, source="third")
+        owner.current = LyricsState("ready", third)
+        owner.changed.emit(next(iter(owner.interests.values())))
+        assert view.document is third and view.browsing and view._return.isActive()
+        assert view.scroll_bar.value() == value // 2
+        assert not seeks
+    finally:
+        sip.delete(parent)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("雨の日も風の日も歌い続ける", "ｶﾀｶﾅ 한국어 中文歌词"),
+        ("😀🎵 emoji line 🎶", "👩\u200d👩\u200d👧 family"),
+        ("مرحبا بالعالم", "שלום עולם and English"),
+        ("long wrapped words " * 12, "short"),
+    ],
+)
+def test_riced_rows_render_mixed_scripts_with_stable_heights(qapp: QApplication, lines: tuple[str, str]) -> None:
+    text = lines[0]
+    count = len(text.encode("utf-16-le")) // 2
+    words = tuple(LyricWord(1000 + index * 100, None, character) for index, character in enumerate(text))
+    document = LyricsDocument(
+        (LyricLine(1000, 5000, text, words), LyricLine(6000, 9000, lines[1]), LyricLine(10000, None, "end"))
+    )
+    view = styled_view(
+        qapp,
+        document,
+        font_weight=400,
+        style={"current": {"bold": True, "background": "#40ffffff"}, "before": {"italic": True}},
+        glow={"enabled": True},
+    )
+    try:
+        view.set_position(500, ("session", 1))
+        view.finish_line_motion()
+        heights = [view.visualRect(view.rows.index(row + 1)).height() for row in range(3)]
+        for position in (1500, 6500, 11000):
+            view.set_position(position, ("session", 1))
+            view.finish_line_motion()
+            assert not view.grab().isNull()
+            assert [view.visualRect(view.rows.index(row + 1)).height() for row in range(3)] == heights
+        view.set_position(1450, ("session", 1))
+        ranges = view.delegate.formats(0, 1.0, 1)
+        assert sum(part.length for part in ranges) == count
+        assert view.delegate.glows
+    finally:
+        dispose_view(view)
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_playhead_absorbs_small_differences_and_snaps_otherwise() -> None:
+    clock = FakeClock()
+    head = LyricsPlayhead(clock)
+    head.sample(1000, ("session", 1), True, 1.0)
+    clock.now += 0.5
+    assert head.position() == pytest.approx(1500)
+    head.sample(1450, ("session", 1), True, 1.0)
+    readings: list[float] = []
+    for _ in range(10):
+        value = head.position()
+        assert value is not None
+        readings.append(value)
+        clock.now += 0.05
+    assert readings[0] == pytest.approx(1500) and readings == sorted(readings)
+    clock.now += 2
+    assert head.position() == pytest.approx(1450 + 2.5 * 1000, abs=1)
+    head.sample(9000, ("session", 1), True, 1.0)
+    assert head.position() == pytest.approx(9000)
+    head.sample(2000, ("session", 1), True, 1.0)
+    assert head.position() == pytest.approx(2000), "a backward seek snaps"
+    head.sample(2100, ("session", 2), True, 1.0)
+    assert head.position() == pytest.approx(2100), "a new identity snaps"
+    head.sample(2200, ("session", 2), False, 1.0)
+    clock.now += 3
+    assert head.position() == pytest.approx(2200), "paused playheads hold"
+    head.sample(1000, ("session", 2), True, 1.25)
+    clock.now += 0.4
+    assert head.position() == pytest.approx(1500)
+    head.sample(None, None, False, 1.0)
+    assert head.position() is None
+
+
+def sweep_view(qapp: QApplication, document: LyricsDocument, width: int = 590, **lyrics: object) -> LyricsView:
+    view = styled_view(qapp, document, width, word_highlight="sweep", **lyrics)
+    view.playhead = LyricsPlayhead(FakeClock())
+    return view
+
+
+def fractions(view: LyricsView, position: int, playing: bool = False) -> list[float]:
+    view.set_position(position, ("session", 1), playing=playing)
+    segments = view.sweep_segments(view.current_line)
+    assert segments is not None
+    return [round(fraction, 3) for _, fraction in segments]
+
+
+def test_word_sweep_fills_each_word_by_its_own_progress(qapp: QApplication) -> None:
+    words = (LyricWord(1000, 2000, "alpha "), LyricWord(2000, 3000, "beta "), LyricWord(4000, 4400, "😀"))
+    document = LyricsDocument((LyricLine(1000, 5000, "alpha beta 😀", words), LyricLine(6000, None, "next")))
+    view = sweep_view(qapp, document)
+    try:
+        assert fractions(view, 1000) == [0.0, 0.0, 0.0]
+        assert fractions(view, 1500) == [0.5, 0.0, 0.0]
+        assert fractions(view, 2000) == [1.0, 0.0, 0.0]
+        assert fractions(view, 2500) == [1.0, 0.5, 0.0]
+        assert fractions(view, 4200) == [1.0, 1.0, 0.5]
+        rects = [rect for rect, _ in view.sweep_segments(0) or []]
+        assert rects[0].right() <= rects[1].left() + 0.5 and rects[2].width() > 0
+        view.set_position(5200, ("session", 1))
+        assert view.sweep_segments(0) is None, "past the line end the step colours return"
+        assert fractions(view, 1500) == [0.5, 0.0, 0.0], "a backward seek redraws the earlier fill"
+    finally:
+        dispose_view(view)
+    reverse = LyricsDocument(
+        (LyricLine(1000, 5000, "first second", (LyricWord(3000, 4000, "first "), LyricWord(1000, 2000, "second"))),)
+    )
+    view = sweep_view(qapp, reverse)
+    try:
+        assert fractions(view, 1500) == [0.0, 0.5], "timing order may differ from text order"
+    finally:
+        dispose_view(view)
+
+
+def test_sweep_crosses_wrapped_lines_and_right_to_left_fills_whole_words(qapp: QApplication) -> None:
+    long_word = "x" * 60
+    document = LyricsDocument((LyricLine(1000, 9000, long_word, (LyricWord(1000, 3000, long_word),)),))
+    view = sweep_view(qapp, document, width=240)
+    try:
+        view.set_position(2000, ("session", 1))
+        segments = view.sweep_segments(0) or []
+        assert len(segments) >= 2, "the word wraps across layout lines"
+        total = sum(rect.width() for rect, _ in segments)
+        filled = sum(rect.width() * fraction for rect, fraction in segments)
+        assert filled == pytest.approx(total / 2, rel=0.02)
+        assert segments[0][1] == 1.0 and segments[-1][1] == 0.0
+    finally:
+        dispose_view(view)
+    hebrew = LyricsDocument((LyricLine(1000, 9000, "שלום", (LyricWord(1000, 3000, "שלום"),)),))
+    view = sweep_view(qapp, hebrew)
+    try:
+        assert set(fractions(view, 1900)) == {0.0} and set(fractions(view, 2000)) == {1.0}
+    finally:
+        dispose_view(view)
+
+
+def test_line_sweep_is_presentation_only_and_capped(qapp: QApplication) -> None:
+    document = parse_lyrics("[00:01.00]plain line\n[00:30.00]later")
+    view = styled_view(qapp, document, line_sweep=True, line_sweep_max_ms=2000)
+    view.playhead = LyricsPlayhead(FakeClock())
+    try:
+        assert fractions(view, 2000) == [0.5]
+        assert fractions(view, 3500) == [1.0]
+        assert view.document is not None and view.document.lines[0].words == ()
+    finally:
+        dispose_view(view)
+
+
+def test_sweep_subscribes_only_while_visible_playing_and_on_screen(qapp: QApplication) -> None:
+    timed = parse_lyrics("\n".join(f"[{index * 1000},900]Line {index}" for index in range(60)))
+    plain = styled_view(qapp, timed)
+    try:
+        plain.set_position(5100, ("session", 1), playing=True)
+        assert not plain._sweep_frames.isActive()
+    finally:
+        dispose_view(plain)
+    view = styled_view(qapp, timed, line_sweep=True)
+    try:
+        view.set_position(5100, ("session", 1), playing=True)
+        assert not view._sweep_frames.isActive(), "the active row is still below the viewport"
+        view.follow(instant=True)
+        view.finish_line_motion()
+        assert view._sweep_frames.isActive()
+        view.set_position(5200, ("session", 1), playing=False)
+        assert not view._sweep_frames.isActive()
+        view.set_position(5300, ("session", 1), playing=True)
+        view.accept_input = False
+        assert not view._sweep_frames.isActive()
+        view.accept_input = True
+        assert view._sweep_frames.isActive()
+        view.browse()
+        view.scroll_bar.setValue(view.scroll_bar.maximum())
+        assert not view.visualRect(view.rows.index(6)).intersects(view.canvas.rect())
+        assert not view._sweep_frames.isActive()
+        view.follow(instant=True)
+        assert view._sweep_frames.isActive()
+        view.hide()
+        assert not view._sweep_frames.isActive()
+    finally:
+        dispose_view(view)
+
+
+def test_sweep_frame_shows_an_intermediate_fill(qapp: QApplication) -> None:
+    text = "MMMMMMMMMMMMMMMM"
+    document = LyricsDocument((LyricLine(1000, 9000, text, (LyricWord(1000, 3000, text),)),))
+    view = sweep_view(
+        qapp, document, sweep_softness=0, style={"current": {"color": "#ff0000"}}, inactive_color="#0000ff"
+    )
+    try:
+        redness: list[tuple[int, int]] = []
+        for position in (1000, 2000, 3000):
+            view.set_position(position, ("session", 1))
+            view.finish_line_motion()
+            image = view.grab().toImage()
+            rect = view.visualRect(view.rows.index(1))
+            segment = (view.sweep_segments(0) or [(QRectF(), 0.0)])[0][0]
+            row_y = rect.center().y()
+            counts: list[int] = []
+            for low, high in ((0.05, 0.4), (0.6, 0.95)):
+                left, right = (
+                    round(segment.left() + segment.width() * low) + 4,
+                    round(segment.left() + segment.width() * high) + 4,
+                )
+                counts.append(
+                    sum(
+                        1
+                        for x in range(left, right)
+                        for y in range(rect.top(), rect.bottom())
+                        if image.pixelColor(x, y).red() > 200 and image.pixelColor(x, y).green() < 80
+                    )
+                )
+            redness.append((counts[0], counts[1]))
+            assert row_y > 0
+        assert redness[0][0] == 0 and redness[1][0] > 0 and redness[1][1] == 0 and redness[2][1] > 0
+    finally:
+        dispose_view(view)
+
+
+def test_glow_halo_covers_the_text_plus_its_spread(qapp: QApplication) -> None:
+    from core.widgets.yasb.media_v2_lyrics_view import ink_rect, render_glow
+
+    view = styled_view(qapp, numbered(4), glow={"enabled": True, "radius": 10})
+    try:
+        layout = view.delegate.layout_for(0, 0)
+        for dpr in (1.0, 2.0):
+            image, area = render_glow(layout, QColor("#cba6f7"), 10, dpr)
+            ink = ink_rect(layout)
+            assert not image.isNull() and image.width() < area.width() * dpr
+            assert area == ink.adjusted(-15, -15, 15, 15)
+    finally:
+        dispose_view(view)

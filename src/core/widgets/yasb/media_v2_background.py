@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import PyQt6.QtCore as QtCore
-from PyQt6.QtCore import QEasingCurve, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QEvent, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QHideEvent,
@@ -24,13 +24,14 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPixmap,
+    QRegion,
     QShowEvent,
 )
 from PyQt6.QtWidgets import QFrame, QStyle, QStyleOption, QWidget
 
 from core.utils.qobject import is_valid_qobject
 from core.validation.widgets.yasb.media_v2 import MediaBackgroundConfig
-from core.widgets.yasb.media_v2_motion import animate, settle
+from core.widgets.yasb.media_v2_motion import FrameClock, animate, settle
 
 pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
@@ -115,7 +116,14 @@ def _prepare_assets(image: QImage, filename: str, radius: float):
 class MediaSurface(QFrame):
     palette_changed = pyqtSignal(object)
 
-    def __init__(self, options: MediaBackgroundConfig, radius: float, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        options: MediaBackgroundConfig,
+        radius: float,
+        parent: QWidget | None = None,
+        *,
+        clock: FrameClock | None = None,
+    ) -> None:
         super().__init__(parent)
         self.options = options
         self.radius = radius
@@ -136,11 +144,13 @@ class MediaSurface(QFrame):
         self._has_media = False
         self._playing = False
         self._ambient_opacity = 0.0
+        self._layer = QPixmap()
+        self._layer_key: tuple[object, ...] | None = None
         self._orbit_start = time.monotonic()
-        self._orbit_timer = QTimer(self)
+        self._ambient_phase = 0.0
+        self._ambient_drawn: list[QRectF] | None = None
         # These very faint, 90-second orbits move less than a pixel per frame.
-        self._orbit_timer.setInterval(83)
-        self._orbit_timer.timeout.connect(self.update)
+        self._orbit_timer = (clock or FrameClock(self)).subscription(self._orbit_tick, 12)
 
     def _get_ambientMotion(self):
         return self._ambient
@@ -192,6 +202,8 @@ class MediaSurface(QFrame):
         if self.options.mode != "color" and self._ambient and self._has_media and self._playing and self.isVisible():
             if not self._orbit_timer.isActive():
                 self._orbit_start = time.monotonic()
+                self._ambient_phase = 0.0
+                self._ambient_drawn = None
                 self._orbit_timer.start()
         else:
             self._orbit_timer.stop()
@@ -339,12 +351,58 @@ class MediaSurface(QFrame):
         # Cancelling to_thread only cancels its waiter. Retain ownership until
         # the worker finishes so reopening coalesces onto that same operation.
         settle(self)
+        self._layer, self._layer_key = QPixmap(), None
         super().hideEvent(a0)
 
-    def paintEvent(self, a0: QPaintEvent | None):
-        if a0 is None:
-            return None
-        painter = QPainter(self)
+    def changeEvent(self, a0: QEvent | None):
+        if a0 is not None and a0.type() in (
+            QEvent.Type.StyleChange,
+            QEvent.Type.PaletteChange,
+            QEvent.Type.EnabledChange,
+        ):
+            self._layer_key = None
+        super().changeEvent(a0)
+
+    def _ambient_rects(self) -> list[QRectF]:
+        phase, scale = self._ambient_phase, self.width() / 619
+        rects: list[QRectF] = []
+        for ratio, dx, dy in (
+            (0.8, math.cos(phase * 2) * 150, math.sin(phase * 2) * 100),
+            (0.9, math.sin(phase * 1.5) * -150, math.cos(phase * 1.5) * -100),
+        ):
+            diameter = self.width() * ratio
+            rects.append(
+                QRectF(
+                    (self.width() - diameter) / 2 + dx * scale,
+                    (self.height() - diameter) / 2 + dy * scale,
+                    diameter,
+                    diameter,
+                )
+            )
+        return rects
+
+    def _orbit_tick(self) -> None:
+        """Advance the orbit and repaint only the bands its two edges cross."""
+        self._ambient_phase = (time.monotonic() - self._orbit_start) * math.tau / 90
+        rects, previous = self._ambient_rects(), self._ambient_drawn
+        self._ambient_drawn = rects
+        if previous is None or self._ambient_opacity <= 0:
+            if self._ambient_opacity > 0:
+                self.update()
+            return
+        changed = QRegion()
+        for old, new in zip(previous, rects):
+            outer = QRegion(old.adjusted(-2, -2, 2, 2).toAlignedRect(), QRegion.RegionType.Ellipse).united(
+                QRegion(new.adjusted(-2, -2, 2, 2).toAlignedRect(), QRegion.RegionType.Ellipse)
+            )
+            inner = QRegion(old.adjusted(2, 2, -2, -2).toAlignedRect(), QRegion.RegionType.Ellipse).intersected(
+                QRegion(new.adjusted(2, 2, -2, -2).toAlignedRect(), QRegion.RegionType.Ellipse)
+            )
+            changed = changed.united(outer.subtracted(inner))
+        self.update(changed.intersected(QRegion(self.rect())))
+
+    def _paint_static(self, painter: QPainter) -> bool:
+        """Paint the QSS background, artwork and overlay; return whether ambient motion may follow."""
         bounds = QRectF(self.rect())
         path = QPainterPath()
         path.addRoundedRect(bounds, self.radius, self.radius)
@@ -357,7 +415,7 @@ class MediaSurface(QFrame):
             color = getattr(self.options, "color", None)
             if color:
                 painter.fillPath(path, QColor(color))
-            return
+            return False
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         for pixmap, opacity in ((self._previous, 1 - self._mix), (self._pixmap, self._mix)):
             if pixmap.isNull():
@@ -374,22 +432,54 @@ class MediaSurface(QFrame):
             overlay.setColorAt(0.5, self._overlay_middle)
             overlay.setColorAt(1, self._overlay_bottom)
             painter.fillPath(path, overlay)
+        return True
+
+    def _static_layer(self) -> QPixmap | None:
+        """The settled background composed once at device resolution; None during a crossfade."""
+        if self._mix < 1 or not self._previous.isNull():
+            return None
+        dpr = self.devicePixelRatioF()
+        key = (
+            self.width(),
+            self.height(),
+            dpr,
+            self._pixmap.cacheKey(),
+            self._image_opacity,
+            self._overlay_top.rgba(),
+            self._overlay_middle.rgba(),
+            self._overlay_bottom.rgba(),
+            self.radius,
+        )
+        if key != self._layer_key or self._layer.isNull():
+            layer = QPixmap(max(1, round(self.width() * dpr)), max(1, round(self.height() * dpr)))
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(layer)
+            self._paint_static(painter)
+            painter.end()
+            self._layer, self._layer_key = layer, key
+        return self._layer
+
+    def paintEvent(self, a0: QPaintEvent | None):
+        if a0 is None:
+            return None
+        painter = QPainter(self)
+        layer = self._static_layer()
+        if layer is None:
+            ambient = self._paint_static(painter)
+        else:
+            painter.drawPixmap(0, 0, layer)
+            ambient = self.options.mode != "color"
+            if ambient and self._ambient_opacity > 0:
+                path = QPainterPath()
+                path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                painter.setClipPath(path)
+        if not ambient:
+            return
         if self._ambient_opacity > 0:
-            phase = (time.monotonic() - self._orbit_start) * math.tau / 90
             painter.setOpacity(self._ambient_opacity)
             painter.setPen(Qt.PenStyle.NoPen)
-            scale = self.width() / 619
-            for ratio, dx, dy, color in (
-                (0.8, math.cos(phase * 2) * 150, math.sin(phase * 2) * 100, "#cba6f7"),
-                (0.9, math.sin(phase * 1.5) * -150, math.cos(phase * 1.5) * -100, "#89b4fa"),
-            ):
-                diameter = self.width() * ratio
+            for rect, color in zip(self._ambient_rects(), ("#cba6f7", "#89b4fa")):
                 painter.setBrush(QColor(color))
-                painter.drawEllipse(
-                    QRectF(
-                        (self.width() - diameter) / 2 + dx * scale,
-                        (self.height() - diameter) / 2 + dy * scale,
-                        diameter,
-                        diameter,
-                    )
-                )
+                painter.drawEllipse(rect)

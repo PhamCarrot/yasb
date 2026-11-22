@@ -74,6 +74,8 @@ def media_section_styles(
 .media-v2-popup .media-audio QLabel, .media-v2-popup .media-audio QCheckBox {{ color: #cdd6f4; font-size: {s(12)}px; }}
 .media-v2-popup .media-audio .audio-status {{ color: #a6adc8; font-size: {s(11)}px; }}
 .media-v2-popup .media-audio .audio-card {{ background: rgba(49,50,68,180); border-radius: {radius}px; }}
+.media-v2-popup .media-audio[audioMotion="enhanced"] .audio-card:hover {{ background: rgba(69,71,90,190); }}
+.media-v2-popup .media-audio[audioMotion="enhanced"] .audio-card[pressed="true"] {{ background: rgba(88,91,112,200); }}
 .media-v2-popup .media-audio .audio-percentage {{ color: #a6adc8; font-size: {s(11.5)}px; font-weight: bold; }}
 .media-v2-popup .media-audio .audio-value {{ color: #cba6f7; font-size: {s(11.5)}px; font-weight: bold; }}
 .media-v2-popup #media-audio-adaptive {{ color: #cdd6f4; font-size: {s(11.5)}px; selection-background-color: #cba6f7; }}

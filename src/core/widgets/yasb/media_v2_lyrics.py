@@ -14,6 +14,7 @@ from core.widgets.services.media.lyrics_provider import LyricsQuery
 from core.widgets.services.media.model import MediaSessionState
 from core.widgets.yasb.media_v2_components import MediaButton, identify
 from core.widgets.yasb.media_v2_lyrics_view import LyricsView
+from core.widgets.yasb.media_v2_motion import FrameClock
 
 
 class LyricsNote(QWidget):
@@ -43,6 +44,7 @@ class MediaLyricsPanel(QFrame):
         *,
         options: MediaLyricsConfig | None = None,
         service: LyricsService | None = None,
+        clock: FrameClock | None = None,
     ) -> None:
         super().__init__(parent)
         identify(self, "media-lyrics", "media-lyrics")
@@ -58,6 +60,7 @@ class MediaLyricsPanel(QFrame):
         self._query: LyricsQuery | None = None
         self._association: tuple[str, int] | None = None
         self._watched_query: LyricsQuery | None = None
+        self._rendered_query: LyricsQuery | None = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
             0,
@@ -66,7 +69,7 @@ class MediaLyricsPanel(QFrame):
             round(self.options.margins.vertical * scale),
         )
         layout.setSpacing(0)
-        self.view = LyricsView(scale, self, self.options)
+        self.view = LyricsView(scale, self, self.options, clock=clock)
         self.view.seek_requested.connect(self.seek_requested)
         layout.addWidget(self.view, 1)
         self.placeholder = QWidget(self)
@@ -116,6 +119,7 @@ class MediaLyricsPanel(QFrame):
                 spacing_ms=self.options.request_spacing_ms,
                 timeout_ms=self.options.request_timeout_ms,
                 credentials=self.options.provider_credentials(),
+                prefer_word_timed=self.options.prefer_word_timed,
             )
         if not self._connected:
             self._service.changed.connect(self._changed)
@@ -154,7 +158,12 @@ class MediaLyricsPanel(QFrame):
         snapshot = self._snapshot
         position = round(snapshot.position * 1000) if snapshot and snapshot.timeline.known else None
         identity = self._association if snapshot and snapshot.is_seekable else None
-        self.view.set_position(position, identity)
+        self.view.set_position(
+            position,
+            identity,
+            playing=bool(snapshot and snapshot.is_playing),
+            rate=snapshot.playback.rate if snapshot else 1.0,
+        )
 
     def set_active(self, active: bool) -> None:
         if active:
@@ -199,7 +208,10 @@ class MediaLyricsPanel(QFrame):
             self._service.state(self._query) if self._service is not None and self._query is not None else LyricsState()
         )
         document = state.document if state.status == "ready" else None
-        self.view.set_document(document)
+        # A later provider's better document for the same track replaces the
+        # current one in place instead of resetting the list.
+        self.view.set_document(document, replace=document is not None and self._rendered_query == self._query)
+        self._rendered_query = self._query if document is not None else None
         has_text = bool(document and (document.lines or document.plain))
         self.view.setVisible(has_text)
         self.placeholder.setVisible(not has_text)

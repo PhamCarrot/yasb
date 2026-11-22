@@ -221,6 +221,52 @@ def _ttml_time(value: object) -> int | None:
         return None
 
 
+def _ttml_end(element: ET.Element, start: int) -> int | None:
+    end = _ttml_time(element.attrib.get("end"))
+    if end is None:
+        duration = _ttml_time(element.attrib.get("dur"))
+        end = start + duration if duration is not None else None
+    return end
+
+
+def _ttml_words(paragraph: ET.Element) -> tuple[str, tuple[LyricWord, ...]]:
+    """Return the paragraph text and one word per timed leaf span, in document order.
+
+    Text outside timed leaves, including the spaces between spans, belongs to the
+    preceding word (leading text to the first word), so the words join to the line.
+    """
+    words: list[LyricWord] = []
+    leading: list[str] = []
+
+    def attach(text: str | None) -> None:
+        if not text:
+            return
+        if words:
+            previous = words[-1]
+            words[-1] = LyricWord(previous.start_ms, previous.end_ms, previous.text + text)
+        else:
+            leading.append(text)
+
+    def visit(element: ET.Element) -> None:
+        for child in element:
+            start = _ttml_time(child.attrib.get("begin"))
+            if len(child) == 0 and start is not None and start >= 0 and child.text:
+                words.append(LyricWord(start, _ttml_end(child, start), "".join(leading) + child.text))
+                leading.clear()
+            elif len(child) == 0:
+                attach(child.text)
+            else:
+                attach(child.text)
+                visit(child)
+            attach(child.tail)
+
+    attach(paragraph.text)
+    visit(paragraph)
+    if not words:
+        return "".join(paragraph.itertext()), ()
+    return "".join(word.text for word in words), tuple(words)
+
+
 def _ttml_document(text: str, source: str) -> LyricsDocument | None:
     try:
         root = ET.fromstring(text)
@@ -233,28 +279,9 @@ def _ttml_document(text: str, source: str) -> LyricsDocument | None:
         start = _ttml_time(paragraph.attrib.get("begin"))
         if start is None or start < 0:
             continue
-        end = _ttml_time(paragraph.attrib.get("end"))
-        if end is None:
-            duration = _ttml_time(paragraph.attrib.get("dur"))
-            end = start + duration if duration is not None else None
-        words: list[LyricWord] = []
-        pieces: list[str] = []
-        for child in paragraph.iter():
-            if child is paragraph:
-                continue
-            word = "".join(child.itertext())
-            if not word:
-                continue
-            word_start = _ttml_time(child.attrib.get("begin")) or start
-            word_end = _ttml_time(child.attrib.get("end"))
-            if word_end is None:
-                duration = _ttml_time(child.attrib.get("dur"))
-                word_end = word_start + duration if duration is not None else None
-            words.append(LyricWord(word_start, word_end, word))
-            pieces.append(word)
-        line_text = "".join(pieces) if pieces else "".join(paragraph.itertext())
+        line_text, words = _ttml_words(paragraph)
         if line_text.strip():
-            lines.append(LyricLine(start, end, line_text, tuple(words)))
+            lines.append(LyricLine(start, _ttml_end(paragraph, start), line_text, words))
     if not lines:
         return None
     return LyricsDocument(tuple(sorted(lines, key=lambda line: line.start_ms)), source=source, format="ttml")

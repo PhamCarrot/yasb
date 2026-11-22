@@ -20,12 +20,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.validation.widgets.yasb.media_v2 import MediaLyricsConfig
+from core.validation.widgets.yasb.media_v2 import MediaLyricsConfig, MediaV2AudioConfig
 from core.widgets.yasb.media_v2_audio import MediaAudioPanel
 from core.widgets.yasb.media_v2_components import CancellableSlider, identify
 from core.widgets.yasb.media_v2_equalizer import EqualizerPanel
 from core.widgets.yasb.media_v2_lyrics import MediaLyricsPanel
-from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
+from core.widgets.yasb.media_v2_motion import FrameClock, RevealEffect, animate, settle
 
 pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
@@ -204,7 +204,15 @@ class SectionTabs(QTabBar):
 
 
 class MediaSections(QObject):
-    def __init__(self, panel: EqualizerPanel, scale: float, lyrics_options: MediaLyricsConfig | None = None) -> None:
+    def __init__(
+        self,
+        panel: EqualizerPanel,
+        scale: float,
+        lyrics_options: MediaLyricsConfig | None = None,
+        *,
+        clock: FrameClock | None = None,
+        audio_options: MediaV2AudioConfig | None = None,
+    ) -> None:
         super().__init__(panel)
         self.panel = panel
         self.active_index = 0
@@ -228,8 +236,8 @@ class MediaSections(QObject):
         panel.main_layout.removeWidget(panel.body)
         self.viewport = PageViewport(scale, panel)
         panel.main_layout.addWidget(self.viewport)
-        self.audio = MediaAudioPanel(panel.apo, scale, self.viewport)
-        self.lyrics = MediaLyricsPanel(scale, self.viewport, options=lyrics_options)
+        self.audio = MediaAudioPanel(panel.apo, scale, self.viewport, audio_options, clock=clock)
+        self.lyrics = MediaLyricsPanel(scale, self.viewport, options=lyrics_options, clock=clock)
         self.pages = [
             MediaPage(panel.body, 0, scale, self.viewport),
             MediaPage(self.audio, 1, scale, self.viewport),
@@ -361,6 +369,7 @@ class MediaSections(QObject):
         self.audio.adaptive.setVisible(index == 0)
         self.lyrics.retry_button.setVisible(index == 2)
         self.lyrics.set_active(index == 2)
+        self.audio.set_active(index == 1)
         self._sync_header()
         for number, page in enumerate(self.pages):
             page.selected = number == index
@@ -397,6 +406,7 @@ class MediaSections(QObject):
             self._cancel_gestures(index)
         self.panel.set_page_active(False, preserve_motion=preserve_motion)
         self.lyrics.set_active(False)
+        self.audio.set_active(False)
 
     def resume(self, *, preserve_motion: bool = False) -> None:
         self._accept_input = True
@@ -406,6 +416,7 @@ class MediaSections(QObject):
             self._set_interactive(index, index == self.active_index)
         self.panel.set_page_active(self.active_index == 0, preserve_motion=preserve_motion)
         self.lyrics.set_active(self.active_index == 2)
+        self.audio.set_active(self.active_index == 1)
 
     def finish(self) -> None:
         for slot in (self.action_slot, self.preset_slot):

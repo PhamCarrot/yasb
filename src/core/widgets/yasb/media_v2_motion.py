@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
 import PyQt6.QtCore as QtCore
 from PyQt6.QtCore import (
+    QAbstractAnimation,
     QEasingCurve,
     QEvent,
     QObject,
@@ -36,6 +38,76 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QGraphicsEffect, QLabel, QSizePolicy, QStyle, QStyleOption, QWidget
 
 pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
+
+
+class FrameClock(QAbstractAnimation):
+    """One frame driver per popup on Qt's animation timer; it runs only while subscribed.
+
+    Due subscribers are called in the same timer turn as every running property
+    animation, so their repaint requests merge into a single paint pass.
+    """
+
+    MAX_FPS = 60
+    # Animation-timer ticks arrive about every 16 ms; this keeps a 60 fps
+    # subscriber on every tick and a 30 fps subscriber on every other one.
+    TOLERANCE = 0.004
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._subscriptions: list[FrameSubscription] = []
+
+    def duration(self) -> int:
+        return -1
+
+    def updateCurrentTime(self, currentTime: int) -> None:
+        now = time.monotonic()
+        for subscription in tuple(self._subscriptions):
+            if subscription.active and now - subscription.last >= subscription.interval - self.TOLERANCE:
+                subscription.last = now
+                subscription.callback()
+
+    @property
+    def subscribers(self) -> int:
+        return len(self._subscriptions)
+
+    def subscription(self, callback: Callable[[], object], fps: float) -> FrameSubscription:
+        return FrameSubscription(self, callback, fps)
+
+    def register(self, subscription: FrameSubscription) -> None:
+        self._subscriptions.append(subscription)
+        if self.state() != QAbstractAnimation.State.Running:
+            self.start()
+
+    def unregister(self, subscription: FrameSubscription) -> None:
+        if subscription in self._subscriptions:
+            self._subscriptions.remove(subscription)
+        if not self._subscriptions:
+            self.stop()
+
+
+class FrameSubscription:
+    """A QTimer-shaped handle on a FrameClock: start, stop and isActive."""
+
+    def __init__(self, clock: FrameClock, callback: Callable[[], object], fps: float) -> None:
+        self.clock = clock
+        self.callback = callback
+        self.interval = 1 / max(1.0, min(float(FrameClock.MAX_FPS), fps))
+        self.last = 0.0
+        self.active = False
+
+    def start(self) -> None:
+        if not self.active:
+            self.active = True
+            self.last = time.monotonic()
+            self.clock.register(self)
+
+    def stop(self) -> None:
+        if self.active:
+            self.active = False
+            self.clock.unregister(self)
+
+    def isActive(self) -> bool:
+        return self.active
 
 
 def animate(

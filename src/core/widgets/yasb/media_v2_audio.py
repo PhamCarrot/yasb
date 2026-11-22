@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
+from functools import partial
 from typing import Any, Literal
 
 import PyQt6.QtCore as QtCore
-from PyQt6.QtCore import QEvent, QPoint, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+)
 from PyQt6.QtGui import (
     QColor,
     QEnterEvent,
@@ -35,9 +49,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.validation.widgets.yasb.media_v2 import MediaV2AudioConfig
 from core.widgets.services.media.equalizer_apo import EqualizerApoController
 from core.widgets.yasb.media_v2_components import CancellableSlider, MediaButton, identify
-from core.widgets.yasb.media_v2_motion import RevealEffect, animate, settle
+from core.widgets.yasb.media_v2_disc import CaptureLease
+from core.widgets.yasb.media_v2_motion import FrameClock, RevealEffect, animate, settle
 
 pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
@@ -100,10 +116,14 @@ class AudioActionButton(MediaButton):
 class AudioSwitch(QCheckBox):
     """Native checkbox input/accessibility with a presentation-only switch."""
 
-    def __init__(self, text: str, scale: float, parent: QWidget, *, compact: bool = False) -> None:
+    def __init__(
+        self, text: str, scale: float, parent: QWidget, *, compact: bool = False, enhanced: bool = False
+    ) -> None:
         super().__init__(text, parent)
         self.scale = scale
         self.compact = compact
+        self.enhanced = enhanced
+        self._off_color = QColor("#45475a")
         self.setMinimumHeight(round((16 if compact else 24) * scale))
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._mix = 0.0
@@ -125,6 +145,15 @@ class AudioSwitch(QCheckBox):
 
     mix: float = pyqtProperty(float, _get_mix, _set_mix)
 
+    def _get_offColor(self) -> QColor:
+        return QColor(self._off_color)
+
+    def _set_offColor(self, value: QColor) -> None:
+        self._off_color = QColor(value)
+        self.update()
+
+    offColor: QColor = pyqtProperty(QColor, _get_offColor, _set_offColor)
+
     def hitButton(self, pos: QPoint) -> bool:
         return self.rect().contains(pos)
 
@@ -143,7 +172,7 @@ class AudioSwitch(QCheckBox):
         painter.drawText(
             title, Qt.AlignmentFlag.AlignVCenter if self.compact else Qt.AlignmentFlag.AlignTop, self.text()
         )
-        off = QColor("#45475a")
+        off = QColor(self._off_color)
         on = self.palette().color(QPalette.ColorRole.Highlight)
         accent = QColor.fromRgbF(
             off.redF() + (on.redF() - off.redF()) * self._mix,
@@ -158,7 +187,16 @@ class AudioSwitch(QCheckBox):
         diameter = knob * 0.72
         x = track.left() + knob * 0.14 + (width - knob) * self._mix
         painter.setBrush(ink)
-        painter.drawEllipse(QRectF(x, track.top() + knob * 0.14, diameter, diameter))
+        if self.enhanced and 0 < self._mix < 1:
+            # The knob stretches towards its travel and recovers at either end.
+            stretch = diameter * 1.6 * self._mix * (1 - self._mix)
+            painter.drawRoundedRect(
+                QRectF(x - stretch * self._mix, track.top() + knob * 0.14, diameter + stretch, diameter),
+                diameter / 2,
+                diameter / 2,
+            )
+        else:
+            painter.drawEllipse(QRectF(x, track.top() + knob * 0.14, diameter, diameter))
         if keyboard_focus(self):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(ink)
@@ -170,6 +208,8 @@ class BalanceSlider(CancellableSlider):
         super().__init__(orientation, parent)
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._zoom = 1.0
+        self.programmatic = False
+        self._presented = 0.0
         self.sliderPressed.connect(lambda: animate(self, "zoom", 1.25, 150))
         self.sliderReleased.connect(lambda: animate(self, "zoom", 1.12 if self.underMouse() else 1.0, 150))
 
@@ -181,6 +221,22 @@ class BalanceSlider(CancellableSlider):
         return self._zoom
 
     zoom: float = pyqtProperty(float, _get_zoom, _set_zoom)
+
+    def _get_presented(self) -> float:
+        return self._presented
+
+    def _set_presented(self, value: float) -> None:
+        self._presented = float(value)
+        self.programmatic = True
+        try:
+            self.setValue(round(value))
+        finally:
+            self.programmatic = False
+
+    presented: float = pyqtProperty(float, _get_presented, _set_presented)
+
+    def track(self, value: int) -> None:
+        self._presented = float(value)
 
     def enterEvent(self, event: QEnterEvent | None) -> None:
         super().enterEvent(event)
@@ -238,14 +294,17 @@ class BalanceSlider(CancellableSlider):
 
 
 class DynamicsTabs(QTabBar):
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, *, enhanced: bool = False) -> None:
         super().__init__(parent)
+        self.enhanced = enhanced
+        self._origin = 0.0
         self._position = 0.0
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.currentChanged.connect(self._select)
 
     def _select(self, index: int) -> None:
         if self.isVisible():
+            self._origin = self._position
             animate(self, "position", float(index), 250)
         else:
             settle(self)
@@ -278,6 +337,16 @@ class DynamicsTabs(QTabBar):
         origin, end = self.tabRect(before), self.tabRect(min(self.count() - 1, before + 1))
         highlight = QStyleOptionTab(options[self.currentIndex()])
         highlight.rect.moveLeft(round(origin.left() + (end.left() - origin.left()) * (position - before)))
+        target = float(self.currentIndex())
+        if self.enhanced and self._origin != target:
+            # The leading edge arrives first; the trailing edge catches up.
+            start, stop = self.tabRect(round(self._origin)), self.tabRect(self.currentIndex())
+            done = max(0.0, min(1.0, (position - self._origin) / (target - self._origin)))
+            lead, trail = 1 - (1 - done) ** 2, done**2
+            rightward = target > self._origin
+            left = start.left() + (stop.left() - start.left()) * (trail if rightward else lead)
+            right = start.right() + (stop.right() - start.right()) * (lead if rightward else trail)
+            highlight.rect = QRect(round(left), start.top(), max(1, round(right - left)), start.height())
         painter.drawControl(QStyle.ControlElement.CE_TabBarTabShape, highlight)
         for option in options:
             option.state &= ~QStyle.StateFlag.State_Selected
@@ -305,6 +374,7 @@ class BalanceScale(QFrame):
         self.dim.setEnabled(False)
         self.setGraphicsEffect(self.dim)
         self._muted = False
+        self.levels = (0.0, 0.0)
         self._fade = QPropertyAnimation(self.dim, b"opacity", self)
         self._fade.setDuration(150)
         self._fade.finished.connect(self._settle_opacity)
@@ -327,6 +397,11 @@ class BalanceScale(QFrame):
     def _settle_opacity(self) -> None:
         self.dim.setEnabled(self._muted)
 
+    def set_levels(self, left: float, right: float) -> None:
+        if (left, right) != self.levels:
+            self.levels = (left, right)
+            self.update()
+
     def hideEvent(self, a0: QHideEvent | None) -> None:
         self._fade.stop()
         self.dim.setOpacity(0.45 if self._muted else 1.0)
@@ -343,6 +418,16 @@ class BalanceScale(QFrame):
             x = 11 * self.scale + index * max(0, self.width() - 22 * self.scale) / 8
             ink = self.palette().color(QPalette.ColorRole.WindowText)
             ink.setAlphaF(0.7 if index == 4 else 0.32)
+            level = self.levels[0] if index < 4 else self.levels[1]
+            lit = 0.0 if index == 4 else max(0.0, min(1.0, level * 4 - (abs(index - 4) - 1)))
+            if lit > 0:
+                accent = self.palette().color(QPalette.ColorRole.Highlight)
+                ink = QColor.fromRgbF(
+                    ink.redF() + (accent.redF() - ink.redF()) * lit,
+                    ink.greenF() + (accent.greenF() - ink.greenF()) * lit,
+                    ink.blueF() + (accent.blueF() - ink.blueF()) * lit,
+                    0.32 + 0.58 * lit,
+                )
             painter.setBrush(ink)
             painter.drawRoundedRect(
                 QRectF(x - width / 2, (self.height() - height * self.scale) / 2, width, height * self.scale),
@@ -352,11 +437,27 @@ class BalanceScale(QFrame):
 
 
 class MediaAudioPanel(QFrame):
-    def __init__(self, controller: EqualizerApoController, scale: float, parent: QWidget) -> None:
+    def __init__(
+        self,
+        controller: EqualizerApoController,
+        scale: float,
+        parent: QWidget,
+        options: MediaV2AudioConfig | None = None,
+        *,
+        clock: FrameClock | None = None,
+    ) -> None:
         super().__init__(parent)
         identify(self, "media-audio", "media-audio")
         self.controller = controller
+        self.options = options or MediaV2AudioConfig()
+        enhanced = self.options.motion == "enhanced"
+        if enhanced:
+            # Scopes the built-in card hover and press rules.
+            self.setProperty("audioMotion", "enhanced")
         self._syncing = False
+        self._active = False
+        self._playing = False
+        self._levels = [0.0, 0.0]
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, round(9 * scale), 0, 0)
         layout.setSpacing(round(8 * scale))
@@ -388,9 +489,9 @@ class MediaAudioPanel(QFrame):
         switches = QHBoxLayout(self.flags)
         switches.setContentsMargins(0, 0, 0, 0)
         switches.setSpacing(round(8 * scale))
-        self.mono = AudioSwitch("Mono audio", scale, self.flags)
+        self.mono = AudioSwitch("Mono audio", scale, self.flags, enhanced=enhanced)
         self.mono.setObjectName("media-audio-mono")
-        self.swap = AudioSwitch("Swap L/R", scale, self.flags)
+        self.swap = AudioSwitch("Swap L/R", scale, self.flags, enhanced=enhanced)
         self.swap.setObjectName("media-audio-swap")
         self.swap.setAccessibleDescription("Exchanges left and right stereo channels. Inactive in mono.")
         self.mono.toggled.connect(self._mono_changed)
@@ -408,7 +509,9 @@ class MediaAudioPanel(QFrame):
         dynamics_row = QHBoxLayout(self.dynamics_card)
         dynamics_row.setContentsMargins(round(14 * scale), round(9 * scale), round(14 * scale), round(9 * scale))
         dynamics_row.addWidget(QLabel("Dynamic range", self.dynamics_card), 1)
-        self.dynamics = identify(DynamicsTabs(self.dynamics_card), "media-audio-dynamics", "audio-dynamics")
+        self.dynamics = identify(
+            DynamicsTabs(self.dynamics_card, enhanced=enhanced), "media-audio-dynamics", "audio-dynamics"
+        )
         self.dynamics.setAccessibleName("Dynamics mode")
         self.dynamics.setFixedSize(round(210 * scale), round(28 * scale))
         self.dynamics.setExpanding(True)
@@ -420,7 +523,7 @@ class MediaAudioPanel(QFrame):
         dynamics_row.addWidget(self.dynamics)
         layout.addWidget(self.dynamics_card)
         # Reparented into the lower header by MediaSections; same state owner.
-        self.adaptive = AudioSwitch("Dynamic", scale, self, compact=True)
+        self.adaptive = AudioSwitch("Dynamic", scale, self, compact=True, enhanced=enhanced)
         self.adaptive.setObjectName("media-audio-adaptive")
         self.adaptive.toggled.connect(self._adaptive_changed)
         self.adaptive.hide()
@@ -441,6 +544,32 @@ class MediaAudioPanel(QFrame):
         self._poll = QTimer(self)
         self._poll.setInterval(200)
         self._poll.timeout.connect(self.sync)
+        self._fades: dict[QLabel, QPropertyAnimation] = {}
+        if enhanced:
+            self.balance.sliderPressed.connect(self._hold_balance)
+            for label in (self.balance_value, self.detail):
+                effect = QGraphicsOpacityEffect(label)
+                effect.setEnabled(False)
+                label.setGraphicsEffect(effect)
+                fade = QPropertyAnimation(effect, b"opacity", label)
+                fade.setDuration(200)
+                fade.setStartValue(0.2)
+                fade.setEndValue(1.0)
+                fade.finished.connect(partial(effect.setEnabled, False))
+                self._fades[label] = fade
+            for card in self.findChildren(QFrame):
+                if "audio-card" in str(card.property("class")).split():
+                    card.setAttribute(Qt.WidgetAttribute.WA_Hover)
+                    card.installEventFilter(self)
+        self._lease: CaptureLease | None = None
+        if self.options.meters:
+            lease = self._lease = CaptureLease(30)
+            lease.channels = frozenset({"left", "right"})
+            self.destroyed.connect(lambda *_: lease.detach())
+            self.balance_card.setAccessibleDescription(
+                "Level meters show the playing source with balance, mono and swap applied here."
+            )
+        self._meter_frames = (clock or FrameClock(self)).subscription(self._meter_tick, 30)
         controller.draft_changed.connect(self.sync)
         self.sync()
 
@@ -457,7 +586,93 @@ class MediaAudioPanel(QFrame):
         self._update(adaptive=value)
 
     def _balance_changed(self, value: int) -> None:
+        if self.balance.programmatic:
+            self._show_percentages(value / 100)
+            return
+        self.balance.track(value)
         self._update(balance=value / 100)
+
+    def _hold_balance(self) -> None:
+        motion = getattr(self.balance, "_motion", {}).get("presented")
+        if motion is not None:
+            motion.stop()
+
+    def _show_percentages(self, balance: float) -> None:
+        self.left_value.setText(f"L  {round((1 - max(0, balance)) * 100)}%")
+        self.right_value.setText(f"{round((1 + min(0, balance)) * 100)}%  R")
+
+    def _fade_text(self, label: QLabel, text: str) -> None:
+        if label.text() == text:
+            return
+        label.setText(text)
+        fade = self._fades.get(label)
+        if fade is not None and self.isVisible():
+            effect = label.graphicsEffect()
+            if effect is not None:
+                effect.setEnabled(True)
+            fade.stop()
+            fade.start()
+
+    def eventFilter(self, a0: QObject | None, a1: QEvent | None) -> bool:
+        if isinstance(a0, QFrame) and a1 is not None:
+            pressed = {
+                QEvent.Type.MouseButtonPress: True,
+                QEvent.Type.MouseButtonRelease: False,
+                QEvent.Type.Leave: False,
+            }
+            state = pressed.get(a1.type())
+            if state is not None and bool(a0.property("pressed")) != state:
+                a0.setProperty("pressed", state)
+                style = a0.style()
+                if style is not None:
+                    style.unpolish(a0)
+                    style.polish(a0)
+        return super().eventFilter(a0, a1)
+
+    def set_active(self, active: bool) -> None:
+        self._active = active
+        self._sync_meters()
+
+    def set_playing(self, playing: bool) -> None:
+        self._playing = playing
+        self._sync_meters()
+
+    def _sync_meters(self) -> None:
+        lease = self._lease
+        if lease is None:
+            return
+        if self._active and self._playing and self.isVisible():
+            lease.attach()
+            self._meter_frames.start()
+            return
+        lease.detach()
+        self._meter_frames.stop()
+        self._levels = [0.0, 0.0]
+        self.balance_scale.set_levels(0.0, 0.0)
+
+    @staticmethod
+    def _level(magnitudes: list[float]) -> float:
+        values = magnitudes[:384]
+        return min(1.0, math.sqrt(sum(values) / len(values)) * 1.6) if values else 0.0
+
+    def _meter_tick(self) -> None:
+        service = self._lease.service if self._lease is not None else None
+        left = right = 0.0
+        if service is not None and service.is_active:
+            left, right = self._level(service.magnitudes("left")), self._level(service.magnitudes("right"))
+        # The tap point relative to the processor is unverified; apply the
+        # stereo stages here so the meters follow the controls either way.
+        state = self.controller.audio_state
+        if state.mono:
+            left = right = (left + right) / 2
+        else:
+            if state.swap:
+                left, right = right, left
+            left, right = left * (1 - max(0.0, state.balance)), right * (1 + min(0.0, state.balance))
+        for index, value in enumerate((left, right)):
+            current = self._levels[index]
+            self._levels[index] = value if value >= current else current * 0.86 + value * 0.14
+        self.balance_scale.set_levels(self._levels[0], self._levels[1])
 
     def _update(self, **changes: object) -> None:
         if not self._syncing and not self.controller.update_audio(**changes):
@@ -472,7 +687,20 @@ class MediaAudioPanel(QFrame):
         self._syncing = True
         detail = ""
         try:
-            self.balance.setValue(round(state.balance * 100))
+            target = round(state.balance * 100)
+            motion = getattr(self.balance, "_motion", {}).get("presented")
+            if self._fades and self.isVisible() and not self.balance.isSliderDown():
+                if target != self.balance.value() and (
+                    motion is None
+                    or motion.state() != QPropertyAnimation.State.Running
+                    or motion.endValue() != float(target)
+                ):
+                    animate(self.balance, "presented", float(target), 220, QEasingCurve.Type.OutCubic)
+            else:
+                if motion is not None:
+                    motion.stop()
+                self.balance.setValue(target)
+                self.balance.track(target)
             amount = abs(state.balance)
             side = "right" if state.balance > 0 else "left"
             description = (
@@ -484,9 +712,10 @@ class MediaAudioPanel(QFrame):
                 if amount < 0.25
                 else f"{side.title()} favored"
             )
-            self.balance_value.setText(description)
-            self.left_value.setText(f"L  {round((1 - max(0, state.balance)) * 100)}%")
-            self.right_value.setText(f"{round((1 + min(0, state.balance)) * 100)}%  R")
+            self._fade_text(self.balance_value, description)
+            animating = motion is not None and motion.state() == QPropertyAnimation.State.Running
+            if not (self._fades and animating):
+                self._show_percentages(state.balance)
             self.mono.setChecked(state.mono)
             self.swap.setChecked(state.swap)
             self.adaptive.setChecked(state.adaptive)
@@ -521,7 +750,7 @@ class MediaAudioPanel(QFrame):
                 text = observation.playback_status(state.bypass)
             else:
                 text = "Saved"
-            self.detail.setText(text)
+            self._fade_text(self.detail, text)
             self.detail.setAccessibleName(text)
             self.detail.setAccessibleDescription(detail)
         finally:
@@ -531,9 +760,12 @@ class MediaAudioPanel(QFrame):
         super().showEvent(a0)
         self.sync()
         self._poll.start()
+        self._sync_meters()
         for effect in self.intro:
             effect.replay()
 
     def hideEvent(self, a0: QHideEvent | None) -> None:
         self._poll.stop()
+        settle(self.balance)
         super().hideEvent(a0)
+        self._sync_meters()

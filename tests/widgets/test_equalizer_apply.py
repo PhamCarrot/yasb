@@ -81,9 +81,9 @@ def test_mouse_drag_applies_only_edited_bands_during_preset_tween(
             for name in presets:
                 qt_test.mouseClick(panel.buttons[name], Qt.MouseButton.LeftButton)
             sliders = panel.bands.sliders
-            motions = [cast(dict[str, QPropertyAnimation], getattr(slider, "_motion"))["gain"] for slider in sliders]
+            travel = panel.bands.travel
             bass = panel_module.PRESETS["Bass"]
-            motions[1].setCurrentTime(50)
+            travel.setCurrentTime(50)
             assert 0 < sliders[1].gain < bass[1]
             generation = writer._generation
             managed = tmp_path / "config" / apo.MANAGED_FILENAME
@@ -111,7 +111,7 @@ def test_mouse_drag_applies_only_edited_bands_during_preset_tween(
             assert panel.apo._draft_token is lease and writer._generation == generation
             await settled(qapp, writer)
             assert managed.read_bytes() == apo.render_managed_config(bass, OUTPUT.endpoint_guid).encode()
-            motions[1].setCurrentTime(motions[1].duration())
+            travel.setCurrentTime(travel.duration())
             assert sliders[1].gain == bass[1]
             assert panel.apply_button.isEnabled() and panel.apply_button.text() == "Apply"
             qt_test.mouseClick(panel.apply_button, Qt.MouseButton.LeftButton)
@@ -147,7 +147,7 @@ def test_two_visible_apo_views_keep_preset_travel_through_writer_readback(
             qt_test.mouseClick(panel.buttons["Bass"], Qt.MouseButton.LeftButton)
             for view in (panel, other):
                 handle = view.bands.sliders[0]
-                tween = cast(dict[str, QPropertyAnimation], getattr(handle, "_motion"))["gain"]
+                tween = view.bands.travel
                 tween.setCurrentTime(70)
                 position = handle.gain
                 assert 0 < position < 5 and view.apo.editing_gains[0] == 5

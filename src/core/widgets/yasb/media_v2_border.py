@@ -23,6 +23,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QFrame, QWidget
 
 from core.validation.widgets.yasb.media_v2 import MediaBorderConfig
+from core.widgets.yasb.media_v2_motion import FrameClock, FrameSubscription
 
 pyqtProperty: Callable[..., Any] = getattr(QtCore, "pyqtProperty")
 
@@ -47,7 +48,13 @@ def lower_left_clockwise_path(rect: QRectF, radius: float) -> QPainterPath:
 
 class MediaBorder(QFrame):
     def __init__(
-        self, radius: float, scale: float = 1.0, parent: QWidget | None = None, options: MediaBorderConfig | None = None
+        self,
+        radius: float,
+        scale: float = 1.0,
+        parent: QWidget | None = None,
+        options: MediaBorderConfig | None = None,
+        *,
+        clock: FrameClock | None = None,
     ) -> None:
         super().__init__(parent)
         self.radius = radius
@@ -66,10 +73,15 @@ class MediaBorder(QFrame):
         self._from_colors = self._colors[:]
         self._palette_started = 0.0
         self._artwork_colors = True
-        self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.setInterval(max(8, 1000 // max(1, self.framerate)))
-        self._timer.timeout.connect(self._tick)
+        self._timer: QTimer | FrameSubscription
+        if self.framerate > FrameClock.MAX_FPS:
+            # The shared animation timer delivers about 60 frames per second.
+            self._timer = QTimer(self)
+            self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+            self._timer.setInterval(max(8, 1000 // max(1, self.framerate)))
+            self._timer.timeout.connect(self._tick)
+        else:
+            self._timer = (clock or FrameClock(self)).subscription(self._tick, self.framerate)
 
     def _get_artworkColors(self):
         return self._artwork_colors

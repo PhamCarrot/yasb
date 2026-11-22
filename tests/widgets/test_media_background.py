@@ -231,3 +231,48 @@ def test_destroyed_surface_drops_result_and_worker_finishes(
             worker.release.set()
 
     asyncio.run(run())
+
+
+def channels(color: QColor) -> tuple[int, int, int, int]:
+    return color.red(), color.green(), color.blue(), color.alpha()
+
+
+def test_settled_background_is_composed_once_and_released_on_hide(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.widgets.yasb.media_v2_motion import settle
+
+    surface = background.MediaSurface(MediaBackgroundConfig(), 12)
+    surface.setStyleSheet("QFrame { background: #1e1e2e; border-radius: 10px; }")
+    surface.resize(320, 240)
+    surface.show()
+    try:
+        image = QImage(64, 64, QImage.Format.Format_RGB32)
+        image.fill(QColor("#c08040"))
+        image.setPixelColor(10, 10, QColor("#2060ff"))
+        surface._install(("fixture", 18), QPixmap.fromImage(image), ["#cba6f7", "#89b4fa", "#f38ba8"])
+        assert surface._static_layer() is None, "a crossfade paints directly"
+        settle(surface)
+        cached = surface.grab().toImage()
+        layer = surface._static_layer()
+        assert layer is not None and surface._static_layer() is layer
+
+        def paint_directly(self: background.MediaSurface) -> QPixmap | None:
+            return None
+
+        monkeypatch.setattr(background.MediaSurface, "_static_layer", paint_directly)
+        direct = surface.grab().toImage()
+        monkeypatch.undo()
+        worst = max(
+            abs(a - b)
+            for y in range(direct.height())
+            for x in range(direct.width())
+            for a, b in zip(channels(cached.pixelColor(x, y)), channels(direct.pixelColor(x, y)))
+        )
+        assert worst <= 2
+        surface.overlayTop = QColor(0, 0, 0, 10)
+        assert surface._static_layer() is not layer
+        surface.hide()
+        assert surface._layer.isNull() and surface._layer_key is None
+    finally:
+        sip.delete(surface)

@@ -503,6 +503,47 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         "animation_duration_ms": 320,
         "browse_return_ms": 4000,
         "drag_threshold": 4,
+        "style": {
+            "before": {
+                "color": None,
+                "background": None,
+                "bold": None,
+                "italic": False,
+                "underline": False,
+                "strikethrough": False,
+                "opacity": None,
+                "scale": None,
+            },
+            "current": {
+                "color": None,
+                "background": None,
+                "bold": None,
+                "italic": False,
+                "underline": False,
+                "strikethrough": False,
+                "opacity": None,
+                "scale": None,
+            },
+            "after": {
+                "color": None,
+                "background": None,
+                "bold": None,
+                "italic": False,
+                "underline": False,
+                "strikethrough": False,
+                "opacity": None,
+                "scale": None,
+            },
+            "background_radius": 6,
+            "background_padding": 4,
+        },
+        "glow": {"enabled": False, "radius": 8, "strength": 0.6, "color": None, "target": "line"},
+        "word_highlight": "step",
+        "sweep_softness": 0.5,
+        "sweep_fps": 30,
+        "unsung_opacity": 0.4,
+        "line_sweep": False,
+        "line_sweep_max_ms": 6000,
         "auto_lookup": True,
         "better_lyrics_enabled": True,
         "musixmatch_enabled": False,
@@ -510,6 +551,7 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         "provider_order": ["lrclib", "netease", "better_lyrics"],
         "request_spacing_ms": 250,
         "request_timeout_ms": 10000,
+        "prefer_word_timed": True,
     }
     custom = MediaV2Config.model_validate(
         {
@@ -561,6 +603,38 @@ def test_media_v2_lyrics_defaults_and_validation() -> None:
         MediaV2Config.model_validate({"popup": {"lyrics": {"active_color": "not-a-color"}}})
     with pytest.raises(ValidationError, match="must not contain duplicates"):
         MediaV2Config.model_validate({"popup": {"lyrics": {"provider_order": ["lrclib", "lrclib"]}}})
+    riced = MediaV2Config.model_validate(
+        {
+            "popup": {
+                "lyrics": {
+                    "style": {
+                        "before": {"color": "#6c7086", "italic": True, "opacity": 0.55},
+                        "current": {"color": "#cba6f7", "bold": True, "background": "#33cba6f7", "scale": 1.1},
+                        "after": {"underline": True, "strikethrough": True},
+                        "background_radius": 8,
+                    },
+                    "glow": {"enabled": True, "radius": 10, "strength": 0.7, "target": "sung"},
+                    "word_highlight": "sweep",
+                    "line_sweep": True,
+                }
+            }
+        }
+    ).popup.lyrics
+    assert riced.style.current.bold and riced.style.before.opacity == 0.55 and riced.glow.target == "sung"
+    for invalid in (
+        {"style": {"current": {"color": "not-a-color"}}},
+        {"style": {"before": {"background": "nope"}}},
+        {"style": {"after": {"opacity": 1.5}}},
+        {"style": {"after": {"scale": 2}}},
+        {"style": {"after": {"blink": True}}},
+        {"glow": {"color": "invalid"}},
+        {"glow": {"radius": 33}},
+        {"sweep_fps": 61},
+        {"line_sweep_max_ms": 100},
+        {"word_highlight": "karaoke"},
+    ):
+        with pytest.raises(ValidationError):
+            MediaV2Config.model_validate({"popup": {"lyrics": invalid}})
 
 
 @pytest.mark.parametrize("position", ["left", "right", "top", "hidden"])
