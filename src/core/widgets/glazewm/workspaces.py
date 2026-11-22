@@ -466,17 +466,6 @@ class GlazewmWorkspacesWidget(BaseWidget):
 
             btn.update_button()
 
-    def _get_active_workspace(
-        self,
-    ) -> GlazewmWorkspaceButton | GlazewmWorkspaceButtonWithIcons | None:
-        for btn in self.workspaces.values():
-            if btn.status in (
-                WorkspaceStatus.ACTIVE_EMPTY,
-                WorkspaceStatus.ACTIVE_POPULATED,
-            ):
-                return btn
-        return None
-
     @override
     def wheelEvent(self, a0: QWheelEvent | None) -> None:
         if a0 is None or not self.config.enable_scroll_switching:
