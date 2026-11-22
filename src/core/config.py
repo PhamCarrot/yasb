@@ -14,20 +14,11 @@ from core.utils.alert_dialog import raise_info_alert
 from core.utils.css_processor import CSSProcessor
 from core.utils.validation_errors import format_pydantic_errors_to_yaml
 from core.validation.config import YasbConfig
-from settings import DEFAULT_CONFIG_DIRECTORY, DEFAULT_CONFIG_FILENAME, DEFAULT_STYLES_FILENAME, GITHUB_URL
+from settings import DEFAULT_CONFIG_DIRECTORY, DEFAULT_CONFIG_FILENAME, DEFAULT_STYLES_FILENAME
 
 HOME_CONFIGURATION_DIR = DEFAULT_CONFIG_DIRECTORY
 HOME_STYLES_PATH = path.normpath(path.join(HOME_CONFIGURATION_DIR, DEFAULT_STYLES_FILENAME))
 HOME_CONFIG_PATH = path.normpath(path.join(HOME_CONFIGURATION_DIR, DEFAULT_CONFIG_FILENAME))
-GITHUB_ISSUES_URL = f"{GITHUB_URL}/issues"
-
-
-class ConfigValidationError(TypeError):
-    def __init__(self, message: str, errors: str, filetype: str, filepath: str):
-        super().__init__(message)
-        self.errors = errors
-        self.filetype = filetype
-        self.filepath = filepath
 
 
 def is_first_run() -> bool:
