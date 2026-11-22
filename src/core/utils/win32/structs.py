@@ -386,12 +386,6 @@ class DOT11_SSID(ct.Structure):
         # Slice the byte array to the length specified and decode
         return bytes(self.ucSSID[: self.uSSIDLength]).decode("utf-8", errors="replace")
 
-    def set_ssid(self, ssid: bytes) -> None:
-        if len(ssid) > 32:
-            raise ValueError("SSID too long (max 32 bytes)")
-        self.uSSIDLength = len(ssid)
-        ct.memmove(self.ucSSID, ssid, self.uSSIDLength)
-
 
 class WLAN_AVAILABLE_NETWORK(ct.Structure):
     _fields_ = [
