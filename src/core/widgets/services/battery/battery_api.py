@@ -355,12 +355,3 @@ class BatteryAPI:
             chemistry=extended.chemistry,
             health_percent=health_percent,
         )
-
-    def is_available(self) -> bool:
-        """Check if a battery is present in the system."""
-        status = SYSTEM_POWER_STATUS()
-        if not kernel32.GetSystemPowerStatus(byref(status)):
-            return False
-        return not (
-            (status.BatteryFlag & BATTERY_FLAG_NO_BATTERY) or status.BatteryLifePercent == BATTERY_PERCENTAGE_UNKNOWN
-        )
