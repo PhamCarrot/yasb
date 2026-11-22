@@ -8,7 +8,6 @@ architecture-specific updates (x64 and ARM64) and ensures version consistency.
 
 import json
 import logging
-import platform
 import re
 import ssl
 import threading
@@ -338,19 +337,6 @@ class UpdateService:
             LAST_CHECK_FILE.write_text(str(time.time()))
         except Exception as e:
             logging.warning("Failed to update last check time: %s", e)
-
-    def get_version_info(self) -> dict[str, Any]:
-        """Get comprehensive version and architecture information.
-
-        Returns:
-            Dictionary with version, architecture, and system info
-        """
-        return {
-            "version": self._current_version,
-            "architecture": ARCHITECTURE,
-            "platform": platform.platform(),
-            "machine": platform.machine(),
-        }
 
     def is_update_supported(self) -> bool:
         """Check if updates are supported on this system.
