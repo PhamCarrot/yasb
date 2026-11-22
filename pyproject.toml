@@ -16,7 +16,7 @@ dependencies = [
     "pyqt6==6.10.2",
     "pydantic==2.14.3",
     "certifi==2026.10.19",
-    "humanize==4.16.0",
+    "humanize==4.17.0",
     "pyyaml==6.0.3",
     "holidays==0.107",
     "watchdog==6.0.0",
