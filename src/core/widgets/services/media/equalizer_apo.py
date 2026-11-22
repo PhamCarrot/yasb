@@ -192,11 +192,6 @@ def discover_equalizer_apo_details(registry: Any = winreg) -> tuple[EqualizerApo
     ), "ready"
 
 
-def discover_equalizer_apo(registry: Any = winreg) -> EqualizerApoInstallation | None:
-    """Discover Equalizer APO from HKLM without assuming Program Files."""
-    return discover_equalizer_apo_details(registry)[0]
-
-
 def validate_gains(gains: Sequence[float]) -> tuple[float, ...]:
     values = tuple(float(value) for value in gains)
     if len(values) != len(FREQUENCIES):
@@ -402,11 +397,6 @@ def analyze_existing_config(config_text: str) -> ExistingConfigAnalysis:
         True,
         reason="The existing Equalizer APO configuration contains unrecognized active commands.",
     )
-
-
-def detect_external_filters(config_text: str) -> bool:
-    """Backward-compatible boolean view of the richer config analysis."""
-    return analyze_existing_config(config_text).external_filters
 
 
 def neutralize_stock_config(config_text: str, analysis: ExistingConfigAnalysis) -> str:
