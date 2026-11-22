@@ -188,8 +188,3 @@ class WindowsMedia(QObject, metaclass=QSingleton):
 
     def seek_to_position(self, position: float, *, expected_revision: int | None = None):
         return self._ensure_backend().seek(position, expected_revision=expected_revision)
-
-    def _on_quit(self):
-        backend = self.backend
-        if is_valid_qobject(backend):
-            backend.close()
