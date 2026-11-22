@@ -37,16 +37,6 @@ class NotificationLabel(QLabel):
         self._show_dot = enabled
         self.update()
 
-    def set_corner(self, corner: str | Corner):
-        """Set the corner where the dot should appear."""
-        self._corner = corner
-        self.update()
-
-    def set_color(self, color: str):
-        """Set the color of the notification dot."""
-        self._color = color
-        self.update()
-
     def paintEvent(self, a0: QPaintEvent | None):
         super().paintEvent(a0)
         if self._show_dot:
