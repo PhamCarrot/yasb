@@ -107,18 +107,6 @@ class PinManager:
         """Get the shared signal bus for taskbar communication."""
         return _taskbar_signal_bus
 
-    @staticmethod
-    def get_path_for_pinned_app(unique_id: str) -> str | None:
-        """Get the exe path for a pinned app from its unique_id."""
-        id_type, value, _ = PinManager._parse_unique_id(unique_id)
-        if id_type == "path":
-            return value
-        elif id_type == "explorer":
-            # Use environment variable to get the correct Windows directory
-            windows_dir = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "C:\\Windows"
-            return os.path.join(windows_dir, "explorer.exe")
-        return None
-
     def icon_source(self, unique_id: str, metadata: dict[str, str] | None = None) -> IconSource | None:
         """What a pinned app's icon is taken from: a Store app's ID, else the shortcut the pin launches (as Windows
         does for its own pins), else its exe, tool file or folder. metadata defaults to the pin's stored data."""
