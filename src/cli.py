@@ -10,7 +10,6 @@ tuna import_times.log
 """
 
 import argparse
-import ctypes
 import datetime
 import os
 import subprocess
@@ -27,11 +26,9 @@ from core.utils.win32.bindings.kernel32 import CloseHandle, CreateFile, GetLastE
 from core.utils.win32.bindings.ole32 import create_dispatch
 from core.utils.win32.bindings.shell32 import IsUserAnAdmin
 from core.utils.win32.constants import (
-    ERROR_NO_MORE_ITEMS,
     GENERIC_READ,
     GENERIC_WRITE,
     INVALID_HANDLE_VALUE,
-    MAX_GUID_CHARS,
     MINIDUMP_WITH_DATA_SEGS,
     MINIDUMP_WITH_FULL_MEMORY_INFO,
     MINIDUMP_WITH_HANDLE_DATA,
@@ -967,20 +964,6 @@ class CLIChannelHandler:
 
 class CLIUpdateHandler:
     """Handles the update functionality for the command-line interface."""
-
-    def get_installed_product_code(self):
-        from core.utils.win32.bindings.msi import MsiEnumRelatedProducts
-
-        product_code = ctypes.create_unicode_buffer(MAX_GUID_CHARS + 1)
-        index = 0
-        while True:
-            result = MsiEnumRelatedProducts("{3f620cf5-07b5-47fd-8e37-9ca8ad14b608}", index, product_code)
-            if result == ERROR_NO_MORE_ITEMS:
-                break
-            elif result == 0:
-                return product_code.value
-            index += 1
-        return None
 
     def update_yasb(self, yasb_version: str):
         """Check for updates and install if available using centralized update service."""
