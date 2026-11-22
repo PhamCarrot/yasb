@@ -463,15 +463,6 @@ class TrafficDataManager:
         return cls._interface_data[interface]["total_bytes_sent"], cls._interface_data[interface]["total_bytes_recv"]
 
     @classmethod
-    def get_session_baseline(cls, interface: str) -> tuple[int | None, int | None]:
-        """Get session baseline for a specific interface"""
-        if interface not in cls._interface_data:
-            return 0, 0
-        return cls._interface_data[interface]["session_start_sent"], cls._interface_data[interface][
-            "session_start_recv"
-        ]
-
-    @classmethod
     def reset_interface_data(cls, interface: str):
         """Reset all data for a specific interface"""
         try:
